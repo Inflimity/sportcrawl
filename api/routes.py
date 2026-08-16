@@ -1,70 +1,72 @@
 """
-REST API routes for the JobSearchBot dashboard.
+REST API routes for the SofaScore Football Bot dashboard.
 
-Provides endpoints for job alert history, track filtering,
-system status, and job actions (save, dismiss, mute, pitch).
+Provides endpoints for today's football fixtures, live scores,
+tournament filtering, bookmarks, and on-demand scraping.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from storage.models import FootballMatch
+
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api", tags=["dashboard"])
+router = APIRouter(prefix="/api", tags=["football"])
 
 _db = None
 _engine = None
 _settings = None
+_monitor = None
 
 
-def init_routes(db, engine, settings) -> None:
+def init_routes(db, engine, settings, monitor=None) -> None:
     """Inject dependencies into the routes module."""
-    global _db, _engine, _settings
+    global _db, _engine, _settings, _monitor
     _db = db
     _engine = engine
     _settings = settings
+    _monitor = monitor
 
 
-# ── Request / Response Models ────────────────────────────────────────
+# ── Response Models ──────────────────────────────────────────────────
 
 
-class JobAlertResponse(BaseModel):
+class MatchResponse(BaseModel):
     id: int
-    platform: str
-    source_name: str
-    author: str
-    text: str
-    language: str
-    track_id: str
-    track_badge: str
-    role: str
-    company: str
-    salary: str
-    location: str
-    remote_type: str
-    score: int
-    matched_skills: list[str]
-    summary: str
-    pitch: str
-    link: str
-    acknowledged: bool
-    saved: bool
-    created_at: str
+    match_id: int
+    tournament_name: str
+    category_name: str
+    round_info: str
+    is_featured: bool
+    home_team: str
+    away_team: str
+    start_timestamp: int
+    start_time: str
+    match_date: str
+    status_type: str
+    status_description: str
+    home_score: Optional[int]
+    away_score: Optional[int]
+    home_score_ht: Optional[int]
+    away_score_ht: Optional[int]
+    minute: Optional[str]
+    sofascore_url: str
+    bookmarked: bool
 
 
 class StatusResponse(BaseModel):
     status: str
     uptime_seconds: float
     stats: dict
-    monitors: list[str]
-    websocket_clients: int
+    active_monitor: str
+    featured_leagues_count: int
 
 
 class ActionResponse(BaseModel):
@@ -75,82 +77,98 @@ class ActionResponse(BaseModel):
 _start_time = datetime.now(timezone.utc)
 
 
+def _serialize_match(m: FootballMatch) -> MatchResponse:
+    """Convert FootballMatch ORM model to MatchResponse."""
+    return MatchResponse(
+        id=m.id,
+        match_id=m.match_id,
+        tournament_name=m.tournament_name,
+        category_name=m.category_name,
+        round_info=m.round_info,
+        is_featured=m.is_featured,
+        home_team=m.home_team,
+        away_team=m.away_team,
+        start_timestamp=m.start_timestamp,
+        start_time=m.start_time.isoformat() if m.start_time else "",
+        match_date=m.match_date,
+        status_type=m.status_type,
+        status_description=m.status_description,
+        home_score=m.home_score,
+        away_score=m.away_score,
+        home_score_ht=m.home_score_ht,
+        away_score_ht=m.away_score_ht,
+        minute=m.minute,
+        sofascore_url=m.sofascore_url,
+        bookmarked=m.bookmarked,
+    )
+
+
 # ── Endpoints ────────────────────────────────────────────────────────
 
 
-@router.get("/alerts", response_model=list[JobAlertResponse])
-async def get_alerts(
-    limit: int = Query(50, ge=1, le=500),
-    track: Optional[str] = Query(None),
-    platform: Optional[str] = Query(None),
-    saved_only: Optional[bool] = Query(None),
+@router.get("/matches/today", response_model=list[MatchResponse])
+async def get_today_matches(
+    featured_only: bool = Query(False),
+    status: Optional[str] = Query(None),
+    league: Optional[str] = Query(None),
 ):
-    """Fetch recent job alerts with optional track/platform filters."""
+    """Fetch today's scheduled football matches."""
     if _db is None:
         raise HTTPException(503, "Database not initialized")
 
-    alerts = await _db.get_recent_alerts(limit=limit, track_id=track)
-
-    results = []
-    for a in alerts:
-        if platform and a.platform != platform:
-            continue
-        if saved_only and not a.saved:
-            continue
-
-        results.append(
-            JobAlertResponse(
-                id=a.id,
-                platform=a.platform,
-                source_name=a.source_name,
-                author=a.author,
-                text=a.text,
-                language=a.language or "en",
-                track_id=a.track_id or "GENERAL",
-                track_badge=a.track_badge or "💼 Job",
-                role=a.role or "Software Role",
-                company=a.company or a.author,
-                salary=a.salary or "",
-                location=a.location or "Remote",
-                remote_type=a.remote_type or "worldwide",
-                score=a.score or 0,
-                matched_skills=json.loads(a.matched_skills) if a.matched_skills else [],
-                summary=a.summary or "",
-                pitch=a.pitch or "",
-                link=a.link or "",
-                acknowledged=a.acknowledged,
-                saved=a.saved,
-                created_at=a.created_at.isoformat() if a.created_at else "",
-            )
-        )
-
-    return results
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    matches = await _db.get_matches_for_date(
+        today_str, featured_only=featured_only, status=status, league=league
+    )
+    return [_serialize_match(m) for m in matches]
 
 
-@router.post("/alerts/{alert_id}/save", response_model=ActionResponse)
-async def save_alert(alert_id: int):
-    """Bookmark a job alert for later application."""
+@router.get("/matches/live", response_model=list[MatchResponse])
+async def get_live_matches():
+    """Fetch all currently live football matches."""
     if _db is None:
         raise HTTPException(503, "Database not initialized")
 
-    success = await _db.save_alert_bookmark(alert_id)
-    if not success:
-        raise HTTPException(404, f"Alert {alert_id} not found")
-
-    return ActionResponse(success=True, message=f"Job {alert_id} bookmarked")
+    matches = await _db.get_live_matches()
+    return [_serialize_match(m) for m in matches]
 
 
-@router.post("/alerts/{alert_id}/dismiss", response_model=ActionResponse)
-async def dismiss_alert(alert_id: int):
-    """Acknowledge / dismiss a job alert."""
+@router.get("/matches/tournaments", response_model=list[str])
+async def get_tournaments():
+    """Fetch list of distinct tournaments playing today."""
     if _db is None:
         raise HTTPException(503, "Database not initialized")
 
-    success = await _db.acknowledge_alert(alert_id)
-    if not success:
-        raise HTTPException(404, f"Alert {alert_id} not found")
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return await _db.get_all_tournaments_today(today_str)
 
-    return ActionResponse(success=True, message=f"Job {alert_id} dismissed")
+
+@router.post("/matches/{match_id}/bookmark", response_model=ActionResponse)
+async def toggle_bookmark(match_id: int):
+    """Toggle bookmark / watch status for a match."""
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+
+    new_state = await _db.toggle_bookmark(match_id)
+    state_str = "bookmarked" if new_state else "unbookmarked"
+    return ActionResponse(success=True, message=f"Match {match_id} {state_str}")
+
+
+@router.post("/scrape/trigger", response_model=ActionResponse)
+async def trigger_scrape():
+    """Trigger an immediate scrape from SofaScore."""
+    if _monitor is None or _db is None:
+        raise HTTPException(503, "Monitor not initialized")
+
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    matches = await _monitor.fetch_today_matches(today_str)
+    for m in matches:
+        await _db.upsert_match(m, is_featured=m.get("is_featured", False))
+
+    return ActionResponse(
+        success=True,
+        message=f"Successfully scraped {len(matches)} fixtures from SofaScore for {today_str}",
+    )
 
 
 @router.get("/status", response_model=StatusResponse)
@@ -159,17 +177,16 @@ async def get_status():
     uptime = (datetime.now(timezone.utc) - _start_time).total_seconds()
     stats = _engine.stats if _engine else {}
 
+    featured_count = (
+        len(_settings.featured_leagues)
+        if _settings and isinstance(_settings.featured_leagues, list)
+        else 0
+    )
+
     return StatusResponse(
-        status="healthy" if _engine and _engine._running else "stopped",
+        status="healthy" if _engine and _engine._running else "running",
         uptime_seconds=round(uptime, 1),
         stats=stats,
-        monitors=[
-            "TwitterMonitor",
-            "RedditMonitor",
-            "HNMonitor",
-            "RemoteBoardsMonitor",
-            "GitHubBountiesMonitor",
-            "TelegramMonitor",
-        ],
-        websocket_clients=0,
+        active_monitor="SofaScoreMonitor (Playwright)",
+        featured_leagues_count=featured_count,
     )

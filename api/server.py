@@ -1,8 +1,7 @@
 """
-FastAPI application server for the ginNews web dashboard.
+FastAPI application server for the SofaScore Football Bot web dashboard.
 
 Serves the static frontend, REST API, and WebSocket endpoint.
-Designed to run alongside the monitoring engine in the same process.
 """
 
 from __future__ import annotations
@@ -27,9 +26,9 @@ _STATIC_DIR = _PROJECT_ROOT / "static"
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
-        title="ginNews Dashboard",
-        description="Cross-platform surveillance & notification relay",
-        version="0.1.0",
+        title="SofaScore Football Match Intelligence",
+        description="Real-time football fixtures, live scores, and tournament tracking",
+        version="2.0.0",
     )
 
     # ── REST API routes ──────────────────────────────────────────────
@@ -38,13 +37,11 @@ def create_app() -> FastAPI:
     # ── WebSocket endpoint ───────────────────────────────────────────
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
-        """Live alert streaming via WebSocket."""
+        """Live match streaming via WebSocket."""
         await ws_manager.connect(websocket)
         try:
             while True:
-                # Keep the connection alive; client may send ping/pong
                 data = await websocket.receive_text()
-                # Echo back as a heartbeat acknowledgment
                 if data == "ping":
                     await websocket.send_text("pong")
         except WebSocketDisconnect:
@@ -63,6 +60,6 @@ def create_app() -> FastAPI:
         index_path = _STATIC_DIR / "index.html"
         if index_path.exists():
             return FileResponse(str(index_path))
-        return {"message": "ginNews API is running. Dashboard not found at /static/index.html"}
+        return {"message": "SofaScore Football API is running. Dashboard not found at /static/index.html"}
 
     return app

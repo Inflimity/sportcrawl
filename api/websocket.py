@@ -1,7 +1,7 @@
 """
-WebSocket connection manager for real-time job alert streaming.
+WebSocket connection manager for real-time football score streaming.
 
-Manages active client connections and broadcasts scored job alerts.
+Manages active client connections and broadcasts live goal and status updates.
 """
 
 from __future__ import annotations
@@ -9,19 +9,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from fastapi import WebSocket
 
 if TYPE_CHECKING:
-    from core.engine import ProcessedAlert
+    from core.engine import MatchAlert
 
 logger = logging.getLogger(__name__)
 
 
 class ConnectionManager:
-    """Manages WebSocket connections for live job alert streaming."""
+    """Manages WebSocket connections for live match streaming."""
 
     def __init__(self) -> None:
         self._connections: list[WebSocket] = []
@@ -45,12 +44,31 @@ class ConnectionManager:
             "WebSocket client disconnected (total: %d)", len(self._connections)
         )
 
-    async def broadcast_alert(self, alert: "ProcessedAlert") -> None:
-        """Broadcast a processed job alert to all connected WebSocket clients."""
+    async def broadcast_alert(self, alert: "MatchAlert") -> None:
+        """Broadcast a match alert to all connected WebSocket clients."""
         if not self._connections:
             return
 
-        payload = self._serialize_alert(alert)
+        m = alert.match
+        payload = {
+            "type": "match_alert",
+            "alert_type": alert.alert_type,
+            "message": alert.message,
+            "data": {
+                "match_id": m.match_id,
+                "tournament_name": m.tournament_name,
+                "category_name": m.category_name,
+                "home_team": m.home_team,
+                "away_team": m.away_team,
+                "home_score": m.home_score,
+                "away_score": m.away_score,
+                "status_type": m.status_type,
+                "status_description": m.status_description,
+                "minute": m.minute,
+                "start_time": m.start_time.isoformat() if m.start_time else "",
+                "sofascore_url": m.sofascore_url,
+            },
+        }
         message = json.dumps(payload)
 
         dead_connections = []
@@ -64,35 +82,6 @@ class ConnectionManager:
             for ws in dead_connections:
                 if ws in self._connections:
                     self._connections.remove(ws)
-
-    @staticmethod
-    def _serialize_alert(alert: "ProcessedAlert") -> dict:
-        """Serialize a ProcessedAlert into a JSON-compatible dict for dashboard clients."""
-        raw = alert.raw
-        job = alert.job
-        return {
-            "type": "job_alert",
-            "data": {
-                "id": alert.db_id,
-                "platform": raw.platform,
-                "source_name": raw.source_name,
-                "author": raw.author,
-                "text": raw.text,
-                "track_id": getattr(job, "track_id", "GENERAL"),
-                "track_badge": getattr(job, "track_badge", "💼 Job"),
-                "role": getattr(job, "role", "Software Role"),
-                "company": getattr(job, "company", raw.author),
-                "salary": getattr(job, "salary", ""),
-                "location": getattr(job, "location", "Remote"),
-                "remote_type": getattr(job, "remote_type", "worldwide"),
-                "score": getattr(job, "score", 0),
-                "matched_skills": getattr(job, "matched_skills", []),
-                "summary": getattr(job, "summary", ""),
-                "pitch": getattr(job, "pitch", ""),
-                "link": raw.link,
-                "timestamp": raw.timestamp.isoformat(),
-            },
-        }
 
 
 # Global singleton instance

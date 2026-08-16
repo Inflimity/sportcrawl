@@ -3,138 +3,129 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="ginNews — Cross-platform surveillance and notification relay dashboard">
-    <title>ginNews — Surveillance Dashboard</title>
+    <meta name="description" content="SofaScore Football Match Intelligence — Live football fixtures, scores, and tournament tracking">
+    <title>SofaScore Football — Today's Matches & Live Scores</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/styles.css">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛰️</text></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
 </head>
 <body>
-    <div class="app">
-        <!-- ── Header ──────────────────────────────────── -->
-        <header class="header">
-            <div class="header-inner">
-                <a href="/" class="logo">
-                    <div class="logo-icon">🛰️</div>
-                    <span class="logo-text">ginNews</span>
-                </a>
-                <div class="header-status">
-                    <div class="status-badge" id="system-status">
-                        <span class="status-dot"></span>
-                        <span id="status-text">Connecting...</span>
+    <div class="app-layout">
+        <!-- ── Top Navigation Bar ────────────────────────────── -->
+        <header class="navbar">
+            <div class="navbar-container">
+                <div class="brand">
+                    <div class="brand-badge">⚽</div>
+                    <div class="brand-text">
+                        <span class="brand-name">SOFA<span class="highlight">SCORE</span></span>
+                        <span class="brand-sub">Football Match Intelligence</span>
                     </div>
-                    <div class="ws-status" id="ws-indicator">
-                        <span>⚡</span>
-                        <span id="ws-text">WebSocket: connecting</span>
+                </div>
+
+                <div class="nav-controls">
+                    <div class="date-pill" id="current-date-badge">
+                        <span class="calendar-icon">📅</span>
+                        <span id="display-date">Today</span>
+                    </div>
+                    
+                    <button class="btn-refresh" id="btn-trigger-scrape" title="Refresh fixtures from SofaScore">
+                        <span class="refresh-icon">🔄</span>
+                        <span class="btn-text">Refresh SofaScore</span>
+                    </button>
+
+                    <div class="status-indicator online" id="ws-indicator" title="WebSocket Live Stream">
+                        <span class="pulse-dot"></span>
+                        <span class="status-label" id="ws-status-text">Live Sync</span>
                     </div>
                 </div>
             </div>
         </header>
 
-        <!-- ── Main Content ────────────────────────────── -->
-        <main class="main">
-            <!-- Stats Grid -->
-            <div class="stats-grid" id="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-label">Total Received</div>
-                    <div class="stat-value indigo" id="stat-received">—</div>
-                    <div class="stat-sub">messages scanned</div>
+        <!-- ── Main Viewport ─────────────────────────────────── -->
+        <main class="main-container">
+            <!-- Metric Highlights -->
+            <section class="metrics-row">
+                <div class="metric-card">
+                    <div class="metric-icon blue">📅</div>
+                    <div class="metric-content">
+                        <div class="metric-val" id="metric-total-today">—</div>
+                        <div class="metric-title">Today's Matches</div>
+                    </div>
                 </div>
-                <div class="stat-card">
-                    <div class="stat-label">Alerts Matched</div>
-                    <div class="stat-value emerald" id="stat-matched">—</div>
-                    <div class="stat-sub">watchlist hits</div>
+                <div class="metric-card">
+                    <div class="metric-icon red">🔴</div>
+                    <div class="metric-content">
+                        <div class="metric-val" id="metric-live-now">—</div>
+                        <div class="metric-title">Live In-Play</div>
+                    </div>
                 </div>
-                <div class="stat-card">
-                    <div class="stat-label">Deduplicated</div>
-                    <div class="stat-value amber" id="stat-deduped">—</div>
-                    <div class="stat-sub">duplicates suppressed</div>
+                <div class="metric-card">
+                    <div class="metric-icon amber">⭐</div>
+                    <div class="metric-content">
+                        <div class="metric-val" id="metric-featured-count">—</div>
+                        <div class="metric-title">Top Leagues</div>
+                    </div>
                 </div>
-                <div class="stat-card">
-                    <div class="stat-label">Dispatched</div>
-                    <div class="stat-value rose" id="stat-dispatched">—</div>
-                    <div class="stat-sub">alerts sent to Telegram</div>
+                <div class="metric-card">
+                    <div class="metric-icon green">🏁</div>
+                    <div class="metric-content">
+                        <div class="metric-val" id="metric-finished-count">—</div>
+                        <div class="metric-title">Finished Games</div>
+                    </div>
                 </div>
-            </div>
+            </section>
 
-            <!-- Content: Feed + Sidebar -->
-            <div class="content-grid">
-                <!-- Alert Feed -->
-                <section class="feed-section">
-                    <div class="section-header">
-                        <h1 class="section-title">
-                            <span class="icon">📡</span>
-                            Live Alert Feed
-                        </h1>
-                        <div class="filter-bar" id="filter-bar">
-                            <button class="filter-btn active" data-filter="all">All</button>
-                            <button class="filter-btn" data-filter="telegram">📱 Telegram</button>
-                            <button class="filter-btn" data-filter="discord">🎮 Discord</button>
-                            <button class="filter-btn" data-filter="twitter">🐦 X</button>
-                            <button class="filter-btn" data-filter="reddit">🔴 Reddit</button>
-                        </div>
-                    </div>
+            <!-- Filters & Search Toolbar -->
+            <section class="toolbar-section">
+                <div class="filter-tabs" id="filter-tabs">
+                    <button class="filter-tab active" data-filter="all">
+                        <span>⚽ All Games</span>
+                        <span class="badge" id="badge-all">0</span>
+                    </button>
+                    <button class="filter-tab live-tab" data-filter="live">
+                        <span class="pulse-red"></span>
+                        <span>Live Now</span>
+                        <span class="badge red" id="badge-live">0</span>
+                    </button>
+                    <button class="filter-tab" data-filter="top">
+                        <span>⭐ Top Leagues</span>
+                        <span class="badge" id="badge-top">0</span>
+                    </button>
+                    <button class="filter-tab" data-filter="upcoming">
+                        <span>🕒 Upcoming</span>
+                        <span class="badge" id="badge-upcoming">0</span>
+                    </button>
+                    <button class="filter-tab" data-filter="finished">
+                        <span>🏁 Finished</span>
+                        <span class="badge" id="badge-finished">0</span>
+                    </button>
+                    <button class="filter-tab" data-filter="saved">
+                        <span>📌 Pinned</span>
+                        <span class="badge" id="badge-saved">0</span>
+                    </button>
+                </div>
 
-                    <div class="alert-feed" id="alert-feed">
-                        <!-- Alerts rendered here by JS -->
-                        <div class="empty-state" id="empty-state">
-                            <div class="empty-icon">🛰️</div>
-                            <div class="empty-title">Waiting for alerts...</div>
-                            <div class="empty-desc">Alerts will appear here in real-time as monitors detect matching messages across your configured platforms.</div>
-                        </div>
-                    </div>
-                </section>
+                <div class="search-box">
+                    <span class="search-icon">🔍</span>
+                    <input type="text" id="match-search" placeholder="Search team (Arsenal, Madrid...), league, or country..." autocomplete="off">
+                    <button class="clear-search" id="clear-search-btn" style="display: none;">✕</button>
+                </div>
+            </section>
 
-                <!-- Sidebar -->
-                <aside class="sidebar">
-                    <!-- Active Monitors -->
-                    <div class="sidebar-card">
-                        <div class="sidebar-title">⚙️ Active Monitors</div>
-                        <div class="monitor-list" id="monitor-list">
-                            <!-- Populated by JS -->
-                        </div>
-                    </div>
-
-                    <!-- Watchlist -->
-                    <div class="sidebar-card">
-                        <div class="sidebar-title">🪙 Watching Coins</div>
-                        <div class="watchlist" id="coin-watchlist">
-                            <!-- Populated by JS -->
-                        </div>
-                    </div>
-
-                    <div class="sidebar-card">
-                        <div class="sidebar-title">🔑 Alert Keywords</div>
-                        <div class="watchlist" id="keyword-watchlist">
-                            <!-- Populated by JS -->
-                        </div>
-                    </div>
-
-                    <!-- Connection Info -->
-                    <div class="sidebar-card">
-                        <div class="sidebar-title">📊 Session Info</div>
-                        <div class="monitor-list">
-                            <div class="monitor-item">
-                                <div class="monitor-info">
-                                    <span class="monitor-icon">⏱️</span>
-                                    <span class="monitor-name">Uptime</span>
-                                </div>
-                                <span class="monitor-status active" id="uptime-display">—</span>
-                            </div>
-                            <div class="monitor-item">
-                                <div class="monitor-info">
-                                    <span class="monitor-icon">🌐</span>
-                                    <span class="monitor-name">WS Clients</span>
-                                </div>
-                                <span class="monitor-status active" id="ws-clients">0</span>
-                            </div>
-                        </div>
-                    </div>
-                </aside>
-            </div>
+            <!-- Matches List / Cards Grid -->
+            <section class="matches-viewport" id="matches-viewport">
+                <!-- Dynamic match groupings rendered via JS -->
+                <div class="loading-state" id="loading-state">
+                    <div class="spinner"></div>
+                    <div class="loading-text">Loading today's football fixtures from SofaScore...</div>
+                </div>
+            </section>
         </main>
     </div>
 
-    <!-- Toast Container -->
+    <!-- Toast Notification Container -->
     <div class="toast-container" id="toast-container"></div>
 
     <script src="/static/app.js"></script>

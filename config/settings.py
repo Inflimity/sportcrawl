@@ -1,8 +1,7 @@
 """
-Job Search Bot Settings — Central configuration loaded from environment variables.
+SofaScore Football Bot Settings — Central configuration loaded from environment variables.
 
 Uses pydantic-settings for type-safe validation with .env file support.
-All credentials, search thresholds, and polling frequencies are defined here.
 """
 
 from __future__ import annotations
@@ -23,61 +22,52 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # ── Telegram (Telethon Userbot for Telegram Job Channels) ────────────
-    telegram_api_id: Optional[int] = None
-    telegram_api_hash: Optional[str] = None
-
-    # ── Telegram Bot (Alert Notifier to your DM) ─────────────────────────
+    # ── Telegram Bot (Alerts & Interactive Commands) ─────────────────────
     telegram_bot_token: str
     admin_chat_id: int
 
-    # ── Job Match & Scoring Thresholds ──────────────────────────────────
-    min_alert_score: int = 70  # Alerts scoring >= this threshold trigger instant Telegram alerts
-    digest_min_score: int = 50  # Alerts scoring between digest_min_score and min_alert_score get saved to DB
-    max_post_age_minutes: int = 60  # Only process and alert jobs posted within the last 60 minutes
+    # ── SofaScore Scraping & Monitoring ─────────────────────────────────
+    sofascore_poll_interval_seconds: int = 120  # Interval between match updates
+    sofascore_headless: bool = True
+    sofascore_timeout_ms: int = 30000
 
-    # ── X / Twitter (Playwright CDP) ─────────────────────────────────────
-    twitter_search_queries: str | list[str] = []
-
-    # ── Reddit (AsyncPRAW + RSS Fallback) ────────────────────────────────
-    reddit_client_id: Optional[str] = None
-    reddit_client_secret: Optional[str] = None
-    reddit_user_agent: str = "InfinityJobSearch/1.0"
-    reddit_subreddits: str | list[str] = [
-        "forhire",
-        "jobbit",
-        "remotejs",
-        "pythonjobs",
-        "reactjs",
-        "nextjs",
-        "Automate",
-        "businessanalysis",
-        "dataanalysis",
-        "analytics",
-    ]
-    reddit_monitor_comments: bool = False
-
-    # ── Hacker News & Remote Boards ──────────────────────────────────────
-    hn_search_enabled: bool = True
-    remote_boards_enabled: bool = True
-    himalayas_categories: list[str] = [
-        "software-development",
-        "data-analytics",
-        "operations-management",
+    # ── Top / Featured Leagues & Competitions ────────────────────────────
+    # Matches in these tournaments are prioritized in digests & alerts
+    featured_leagues: str | list[str] = [
+        "Premier League",
+        "UEFA Champions League",
+        "UEFA Europa League",
+        "UEFA Conference League",
+        "LaLiga",
+        "Serie A",
+        "Bundesliga",
+        "Ligue 1",
+        "FA Cup",
+        "EFL Cup",
+        "Brasileirão Betano",
+        "Major League Soccer",
+        "World Cup",
+        "European Championship",
+        "Copa América",
+        "Africa Cup of Nations",
+        "Community Shield",
+        "Trophee des Champions",
+        "Supercopa",
     ]
 
-    # ── GitHub Bounties & Jobs ───────────────────────────────────────────
-    github_bounties_enabled: bool = True
-    github_token: Optional[str] = None  # Optional personal access token for higher rate limits
+    # ── Daily Match Digest ──────────────────────────────────────────────
+    daily_digest_enabled: bool = True
+    daily_digest_hour: int = 8  # 08:00 AM (local time)
+    daily_digest_minute: int = 0
 
-    # ── Deduplication ───────────────────────────────────────────────────
+    # ── Live Score Alert Notifications ──────────────────────────────────
+    notify_goal_events: bool = True
+    notify_kickoff_events: bool = True
+    notify_match_ended: bool = True
+
+    # ── Deduplication & Cache ───────────────────────────────────────────
     redis_url: Optional[str] = None
     dedup_ttl_seconds: int = 86400  # 24h deduplication window
-
-    # ── Polling & Batching ──────────────────────────────────────────────
-    poll_interval_seconds: int = 30
-    alert_batch_window_seconds: int = 60
-    alert_batch_threshold: int = 10
 
     # ── Database ────────────────────────────────────────────────────────
     database_url: str = "sqlite+aiosqlite:///./ginNews.sqlite"
@@ -85,9 +75,7 @@ class Settings(BaseSettings):
     # ── Validators ──────────────────────────────────────────────────────
 
     @field_validator(
-        "twitter_search_queries",
-        "reddit_subreddits",
-        "himalayas_categories",
+        "featured_leagues",
         mode="before",
     )
     @classmethod

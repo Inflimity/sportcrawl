@@ -1,74 +1,98 @@
-# Infinity Job Search — Autonomous Multi-Platform Job Intelligence Relay
+# ⚽ SofaScore Football Match Intelligence Bot
 
-An intelligent, multi-source job intelligence engine that continuously monitors **X (Twitter)**, **Reddit**, **Hacker News**, **Remote Job Boards (Himalayas, We Work Remotely, Jobicy, Arbeitnow)**, **GitHub Paid Bounties**, **Telegram Job Channels**, and **Discord Boards**, classifies opportunities against your multi-track career taxonomy, scores each role (0–100), and sends rich job alert cards with one-click outreach pitch generation directly to your personal Telegram.
-
----
-
-## 🎯 Target Career Tracks
-
-1. **💻 Full-Stack / Backend Engineering**
-   - *Roles:* Full Stack Engineer, Backend Engineer, Software Engineer, Web Engineer, API Developer.
-   - *Stack:* TypeScript, React, Next.js, Node.js, PHP/Laravel, C#/.NET, PostgreSQL, REST APIs, Docker.
-
-2. **🤖 AI & Agentic Systems Engineering**
-   - *Roles:* AI Engineer, LLM Engineer, AI Developer, Agentic Engineer, Automation Engineer.
-   - *Stack:* Python, FastAPI, LLMs, LangChain, LlamaIndex, Agents, RAG, Supabase, Vector DBs, Playwright.
-
-3. **📊 Business Systems & Workforce Analytics**
-   - *Roles:* Business Analyst, Systems Analyst, Workforce Planning Analyst, Data Analyst, Operations Analyst.
-   - *Stack:* SQL, Excel, Power BI, Tableau, Process Mapping, Workforce Planning, Erlang, Capacity Modeling, KPIs.
+Autonomous football intelligence and fixture tracking engine powered by **Playwright**, **FastAPI**, **SQLAlchemy**, and **Telegram Bot API**.
 
 ---
 
-## ⚡ Key Features
+## 🌟 Key Features
 
-* **Multi-Source Ingestion:** Ingests live job postings from 7 distinct platforms in parallel.
-* **Weighted Composite Scoring (0–100):** Evaluates role title match (35 pts), tech skill density (30 pts), location/timezone compatibility (20 pts), and pay transparency (15 pts).
-* **Negative & Seeker Filter:** Disqualifies `[FOR HIRE]` seeker posts, unpaid gigs, and strict clearance/citizenship constraints.
-* **Instant Pitch Generator:** Interactive `[📋 Pitch Snippet]` Telegram button generates a customized outreach message ready to paste directly into founder DMs or emails.
-* **Interactive Bot Actions:** `[⭐ Save Job]`, `[🔇 Hide Poster (7d)]`, `[🌐 Open & Apply]`.
-* **Zero-Cost Public APIs & Feeds:** Ingests Himalayas, HN Algolia, and Remote RSS feeds with no API subscriptions.
+- **🌐 Automated SofaScore Scraper:** Uses stealth Playwright browser automation to extract all scheduled games, live scores, tournament details, and match URLs from SofaScore without getting blocked.
+- **⚡ Instant CLI Mode:** Run `python main.py --list-today` to immediately fetch and view today's football fixtures cleanly in your terminal.
+- **🤖 Interactive Telegram Bot:**
+  - `/today` or `/games` — View today's matches grouped by league.
+  - `/live` — In-play live games with real-time minutes and scores.
+  - `/top` — Filter by Top 5 European leagues & Champions League.
+  - `/refresh` — Triggers an on-demand scrape.
+  - Interactive inline keyboard buttons for league filtering.
+- **📊 Modern Web Dashboard:** Real-time web UI with glassmorphism styling, live score updates via WebSockets, league tabs, team search, and match bookmarking.
+- **💾 SQLite Persistence:** Stores match history, scores, and tracking metadata.
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Getting Started
 
-### 1. Install Dependencies
+### 1. Installation
 
 ```bash
+# Clone or enter repository
+cd sportcrawl
+
+# Create and activate virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Install Playwright browser binaries
 playwright install chromium
 ```
 
-### 2. Configure Environment
+### 2. Configuration (`.env`)
 
-Copy `.env.example` to `.env` and configure your Telegram bot credentials:
+Configure your Telegram bot token and admin chat ID in `.env`:
+
+```env
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+ADMIN_CHAT_ID=your_chat_id_here
+SOFASCORE_POLL_INTERVAL_SECONDS=120
+SOFASCORE_HEADLESS=true
+FEATURED_LEAGUES=Premier League,UEFA Champions League,UEFA Europa League,LaLiga,Serie A,Bundesliga,Ligue 1,FA Cup,Brasileirão Betano,Major League Soccer
+```
+
+---
+
+## 💻 Usage
+
+### 1. Instant Terminal Match List (CLI)
 
 ```bash
-cp .env.example .env
+# View all today's football fixtures
+python main.py --list-today
+
+# View only Top/Featured leagues today
+python main.py --top
 ```
 
-Key configuration values:
-```env
-TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
-ADMIN_CHAT_ID=your_telegram_user_id
-MIN_ALERT_SCORE=70
-```
-
-### 3. Run the Bot
+### 2. Full Bot Service (Telegram + Web UI + Live Monitoring)
 
 ```bash
 python main.py
 ```
 
+- **Web Dashboard:** Open [http://localhost:8000](http://localhost:8000)
+- **Telegram Bot:** Send `/today` or `/live` to your bot.
+
 ---
 
-## 🧪 Testing
+## 📱 Telegram Commands
 
-Run the full pytest suite:
+| Command | Description |
+| :--- | :--- |
+| `/today` or `/games` | List all today's football games grouped by league |
+| `/live` | View in-play live matches with current score & minute |
+| `/top` | View top European leagues & featured matches |
+| `/refresh` | Force scrape latest match fixtures from SofaScore |
+| `/help` | Show command reference & bot status |
 
-```bash
-pytest tests/ -v
-```
+---
+
+## 📡 REST API Endpoints
+
+- `GET /api/matches/today` — List today's scheduled matches
+- `GET /api/matches/live` — List live in-progress matches
+- `GET /api/matches/tournaments` — List tournaments playing today
+- `POST /api/matches/{match_id}/bookmark` — Pin match to watchlist
+- `POST /api/scrape/trigger` — Trigger fresh SofaScore scrape
+- `GET /api/status` — Health check & stats
+- `WS /ws` — Real-time live score WebSocket stream

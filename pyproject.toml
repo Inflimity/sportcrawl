@@ -1,22 +1,22 @@
 [project]
-name = "infinity-job-search"
-version = "1.0.0"
-description = "Autonomous Multi-Platform Job Intelligence & Notification Engine"
+name = "sportcrawl"
+version = "2.0.0"
+description = "SofaScore Football Match Intelligence & Telegram Bot"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 
 dependencies = [
-    "telethon>=1.36,<2.0",
     "python-telegram-bot>=21.0",
     "playwright>=1.48",
-    "asyncpraw>=7.7",
-    "feedparser>=6.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "websockets>=11.0.3",
     "pydantic-settings>=2.0",
     "aiosqlite>=0.20",
     "sqlalchemy[asyncio]>=2.0",
-    "redis>=5.0",
     "python-dotenv>=1.0",
+    "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
@@ -27,7 +27,7 @@ dev = [
 ]
 
 [project.scripts]
-infinity = "main:cli_entry"
+sportcrawl = "main:cli_entry"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

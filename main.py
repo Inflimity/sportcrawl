@@ -1,16 +1,20 @@
 """
-JobSearchBot — Multi-Platform Job Intelligence & Notification Engine.
+SofaScore Football Bot — Autonomous Match Intelligence & Notification Engine.
 
-Wires together monitors (X, Reddit, Hacker News, Remote Boards, GitHub, Telegram, Discord),
-orchestration engine, scoring taxonomy, Telegram notifier, and SQLite persistence.
+Scrapes today's football fixtures from SofaScore, detects live scores & goals,
+provides interactive Telegram bot commands (/today, /live, /top), and serves
+a modern web dashboard with real-time WebSocket updates.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import signal
 import sys
+from collections import defaultdict
+from datetime import datetime, timezone
 
 import uvicorn
 
@@ -18,14 +22,8 @@ from api.routes import init_routes
 from api.server import create_app
 from api.websocket import ws_manager
 from config.settings import get_settings
-from core.dedup import create_dedup_backend
-from core.engine import AlertEngine, RawAlert
-from monitors.github_bounties_monitor import GitHubBountiesMonitor
-from monitors.hn_monitor import HNMonitor
-from monitors.reddit_monitor import RedditMonitor
-from monitors.remote_boards_monitor import RemoteBoardsMonitor
-from monitors.telegram_monitor import TelegramMonitor
-from monitors.twitter_monitor import TwitterMonitor
+from core.engine import AlertEngine
+from monitors.sofascore_monitor import SofaScoreMonitor
 from notifiers.telegram_bot import TelegramNotifier
 from storage.database import DatabaseManager
 
@@ -33,114 +31,125 @@ from storage.database import DatabaseManager
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s │ %(levelname)-8s │ %(name)-25s │ %(message)s",
+    format="%(asctime)s │ %(levelname)-8s │ %(name)-22s │ %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     stream=sys.stdout,
 )
-logger = logging.getLogger("InfinityJobSearch")
+logger = logging.getLogger("SofaScoreFootballBot")
+
+
+def print_banner() -> None:
+    """Print ASCII art banner."""
+    print(r"""
+========================================================================
+  ____        __        ____                          ____        _   
+ / ___|  ___ / _| __ _ / ___|  ___ ___  _ __ ___     | __ )  ___ | |_ 
+ \___ \ / _ \ |_ / _` |\___ \ / __/ _ \| '__/ _ \    |  _ \ / _ \| __|
+  ___) | (_) |  _| (_| | ___) | (_| (_) | | |  __/    | |_) | (_) | |_ 
+ |____/ \___/|_|  \__,_||____/ \___\___/|_|  \___|    |____/ \___/ \__|
+                                                                      
+========================================================================
+""")
+
+
+async def cli_list_today(featured_only: bool = False) -> None:
+    """CLI mode: Open SofaScore, fetch today's fixtures and print cleanly to terminal."""
+    print_banner()
+    settings = get_settings()
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    print(f"🚀 Opening SofaScore to fetch today's football fixtures ({today_str})...\n")
+
+    monitor = SofaScoreMonitor(settings)
+    matches = await monitor.fetch_today_matches(today_str)
+
+    if not matches:
+        print("❌ No matches found for today.")
+        return
+
+    if featured_only:
+        matches = [m for m in matches if m["is_featured"]]
+
+    # Group by Tournament
+    grouped = defaultdict(list)
+    for m in matches:
+        t_key = f"{m['category_name']} - {m['tournament_name']}" if m['category_name'] != m['tournament_name'] else m['tournament_name']
+        grouped[t_key].append(m)
+
+    print(f"⚽ Found {len(matches)} football games across {len(grouped)} tournaments for today:\n")
+
+    for league, league_matches in grouped.items():
+        is_feat = any(m["is_featured"] for m in league_matches)
+        prefix = "⭐ " if is_feat else "🏆 "
+        print(f"{prefix}\033[1;36m{league}\033[0m ({len(league_matches)} games)")
+        print("-" * 65)
+
+        for m in league_matches:
+            t_str = m["start_time"].strftime("%H:%M UTC") if m.get("start_time") else "--:--"
+            h_score = m["home_score"] if m["home_score"] is not None else ""
+            a_score = m["away_score"] if m["away_score"] is not None else ""
+            score_str = f"{h_score} - {a_score}" if h_score != "" else "vs"
+            
+            status = m.get("status_description", "Not started")
+            if m.get("status_type") == "inprogress":
+                status_color = f"\033[1;31m🔴 LIVE ({m.get('minute') or 'In Play'})\033[0m"
+            elif m.get("status_type") == "finished":
+                status_color = "\033[1;32m🏁 FT\033[0m"
+            else:
+                status_color = f"\033[90m🕒 {t_str}\033[0m"
+
+            print(f"  • {m['home_team']:<24} {score_str:^7} {m['away_team']:>24}  [{status_color}]")
+
+        print()
 
 
 async def main() -> None:
-    """Bootstrap and run the Infinity Job Search system."""
-    print(r"""
-========================================================================
- ___ _  _ ___ ___ _  _ ___ _____   __     _  ___  ___   ___ ___   _   ___  ___ _  _ 
-|_ _| \| | __|_ _| \| |_ _|_   _\ \ / / _ | |/ _ \| _ ) / __| __| /_\ | _ \/ __| || |
- | || .` | _| | || .` || |  | |  \ V / | || | (_) | _ \ \__ \ _| / _ \|   / (__| __ |
-|___|_|\_|_| |___|_|\_|___| |_|   |_|   \__/ \___/|___/ |___/___/_/ \_\_|_\\___|_||_|
-========================================================================
-""")
-    logger.info("Infinity Job Search — Autonomous Job Intelligence & Alert Relay")
+    """Bootstrap and run the SofaScore Football Bot system."""
+    print_banner()
+    logger.info("SofaScore Football Match Intelligence — Booting Service")
 
     # ── 1. Load configuration ────────────────────────────────────────
     settings = get_settings()
-    logger.info("Configuration loaded (Min Score Threshold: %d%%)", settings.min_alert_score)
+    logger.info(
+        "Configuration loaded (Featured Competitions: %d)",
+        len(settings.featured_leagues) if isinstance(settings.featured_leagues, list) else 1,
+    )
 
     # ── 2. Initialise database ───────────────────────────────────────
     db = DatabaseManager(settings.database_url)
     await db.init_db()
 
-    # ── 3. Initialise dedup backend ──────────────────────────────────
-    dedup = create_dedup_backend(
-        redis_url=settings.redis_url,
-        ttl_seconds=settings.dedup_ttl_seconds,
-    )
+    # ── 3. Initialise monitor ────────────────────────────────────────
+    monitor = SofaScoreMonitor(settings)
 
-    # ── 4. Initialise notifier ───────────────────────────────────────
+    # ── 4. Initialise Telegram notifier ──────────────────────────────
     notifier = TelegramNotifier(
         bot_token=settings.telegram_bot_token,
         admin_chat_id=settings.admin_chat_id,
-        batch_window_seconds=settings.alert_batch_window_seconds,
-        batch_threshold=settings.alert_batch_threshold,
         db=db,
+        monitor=monitor,
     )
-    # Start Telegram callback listener for inline buttons
-    await notifier.start_polling_callbacks()
+    # Start Telegram bot command listener
+    await notifier.start_polling()
 
-    # ── 5. Create the shared alert queue ─────────────────────────────
-    queue: asyncio.Queue[RawAlert] = asyncio.Queue()
-
-    async def enqueue_alert(alert: RawAlert) -> None:
-        await queue.put(alert)
-
-    # ── 6. Initialise the engine ─────────────────────────────────────
+    # ── 5. Initialise engine ─────────────────────────────────────────
     engine = AlertEngine(
-        queue=queue,
-        dedup=dedup,
         notifier=notifier,
         db=db,
-        min_alert_score=settings.min_alert_score,
-        digest_min_score=settings.digest_min_score,
-        max_post_age_minutes=settings.max_post_age_minutes,
+        notify_goals=settings.notify_goal_events,
+        notify_kickoff=settings.notify_kickoff_events,
+        notify_final=settings.notify_match_ended,
         ws_broadcast=ws_manager.broadcast_alert,
     )
 
-    # ── 7. Initialise monitors ───────────────────────────────────────
-    monitors = []
+    # Connect monitor to engine
+    monitor.on_match(engine.process_match)
 
-    # Hacker News monitor (public Algolia API + Who is hiring?)
-    if settings.hn_search_enabled:
-        hn_monitor = HNMonitor(settings)
-        hn_monitor.on_message(enqueue_alert)
-        monitors.append(hn_monitor)
-        logger.info("Hacker News monitor registered")
+    # ── 6. Initialise dashboard API ──────────────────────────────────
+    app = create_app()
+    init_routes(db, engine, settings, monitor=monitor)
+    logger.info("Dashboard API & Web UI ready at http://localhost:8000")
 
-    # Remote Boards monitor (Himalayas, WeWorkRemotely, Jobicy, Arbeitnow)
-    if settings.remote_boards_enabled:
-        remote_monitor = RemoteBoardsMonitor(settings)
-        remote_monitor.on_message(enqueue_alert)
-        monitors.append(remote_monitor)
-        logger.info("Remote Boards monitor registered (Himalayas, WWR, Jobicy, Arbeitnow)")
-
-    # GitHub Bounties & Paid Issues monitor
-    if settings.github_bounties_enabled:
-        gh_monitor = GitHubBountiesMonitor(settings)
-        gh_monitor.on_message(enqueue_alert)
-        monitors.append(gh_monitor)
-        logger.info("GitHub Bounties monitor registered")
-
-    # Reddit monitor (AsyncPRAW / RSS fallback)
-    if settings.reddit_subreddits:
-        rd_monitor = RedditMonitor(settings)
-        rd_monitor.on_message(enqueue_alert)
-        monitors.append(rd_monitor)
-        strategy = "AsyncPRAW" if settings.reddit_client_id else "RSS fallback"
-        logger.info("Reddit monitor registered (%d subreddits, %s)", len(settings.reddit_subreddits), strategy)
-
-    # X / Twitter monitor (Playwright DOM scraper)
-    tw_monitor = TwitterMonitor(settings)
-    tw_monitor.on_message(enqueue_alert)
-    monitors.append(tw_monitor)
-    logger.info("X / Twitter monitor registered")
-
-    # Telegram userbot monitor (optional, for developer job groups)
-    if settings.telegram_api_id and settings.telegram_api_hash:
-        tg_monitor = TelegramMonitor(settings)
-        tg_monitor.on_message(enqueue_alert)
-        monitors.append(tg_monitor)
-        logger.info("Telegram Userbot monitor registered")
-
-    # ── 8. Set up graceful shutdown ──────────────────────────────────
+    # ── 7. Set up graceful shutdown ──────────────────────────────────
     shutdown_event = asyncio.Event()
 
     def _signal_handler() -> None:
@@ -154,13 +163,8 @@ async def main() -> None:
         except NotImplementedError:
             pass
 
-    # ── 9. Initialise dashboard API ──────────────────────────────────
-    app = create_app()
-    init_routes(db, engine, settings)
-    logger.info("Dashboard API ready at http://localhost:8000")
-
-    # ── 10. Launch everything concurrently ───────────────────────────
-    async def run_with_shutdown() -> None:
+    # ── 8. Launch background tasks ───────────────────────────────────
+    async def run_services() -> None:
         uvicorn_config = uvicorn.Config(
             app,
             host="0.0.0.0",
@@ -171,21 +175,16 @@ async def main() -> None:
         uvicorn_server = uvicorn.Server(uvicorn_config)
 
         tasks = [
-            asyncio.create_task(engine.start(), name="engine"),
+            asyncio.create_task(engine.start(), name="alert-engine"),
+            asyncio.create_task(monitor.start(), name="sofascore-monitor"),
             asyncio.create_task(uvicorn_server.serve(), name="api-server"),
         ]
-        for monitor in monitors:
-            tasks.append(
-                asyncio.create_task(monitor.start(), name=monitor.name)
-            )
 
         await shutdown_event.wait()
 
         logger.info("Initiating graceful shutdown...")
         await engine.stop()
-
-        for monitor in monitors:
-            await monitor.stop()
+        await monitor.stop()
 
         for task in tasks:
             if not task.done():
@@ -194,18 +193,38 @@ async def main() -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     try:
-        await run_with_shutdown()
+        await run_services()
     finally:
         logger.info("Cleaning up resources...")
         await notifier.close()
-        await dedup.close()
         await db.close()
-        logger.info("JobSearchBot shut down cleanly ✓")
+        logger.info("SofaScore Football Bot shut down cleanly ✓")
 
 
 def cli_entry() -> None:
-    """CLI entry point."""
-    asyncio.run(main())
+    """CLI entry point with argument parsing."""
+    parser = argparse.ArgumentParser(
+        description="SofaScore Football Bot — Match Intelligence & Telegram Bot"
+    )
+    parser.add_argument(
+        "--list-today",
+        "--today",
+        "-t",
+        action="store_true",
+        help="Fetch and list all today's football fixtures directly in terminal and exit",
+    )
+    parser.add_argument(
+        "--top",
+        action="store_true",
+        help="Filter CLI list to top/featured leagues only",
+    )
+
+    args = parser.parse_args()
+
+    if args.list_today or args.top:
+        asyncio.run(cli_list_today(featured_only=args.top))
+    else:
+        asyncio.run(main())
 
 
 if __name__ == "__main__":

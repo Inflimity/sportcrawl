@@ -1,477 +1,417 @@
 /**
- * ginNews Dashboard — Client Application
- *
- * Handles WebSocket live feed, REST API interactions,
- * alert rendering, filtering, actions, and real-time stats.
+ * SofaScore Football Dashboard Client App
+ * Handles fixture loading, real-time WebSocket live score updates, filtering, and bookmarking.
  */
 
-(() => {
-    'use strict';
+class FootballApp {
+    constructor() {
+        this.matches = [];
+        this.currentFilter = 'all';
+        this.searchQuery = '';
+        this.ws = null;
+        this.reconnectTimeout = null;
 
-    // ── State ───────────────────────────────────────────────────
-    const state = {
-        alerts: [],
-        activeFilter: 'all',
-        ws: null,
-        wsRetryCount: 0,
-        wsMaxRetries: 50,
-        wsRetryDelay: 2000,
-        statusPollInterval: null,
-    };
-
-    // ── DOM References ──────────────────────────────────────────
-    const $ = (sel) => document.querySelector(sel);
-    const $$ = (sel) => document.querySelectorAll(sel);
-
-    const dom = {
-        alertFeed: $('#alert-feed'),
-        emptyState: $('#empty-state'),
-        filterBar: $('#filter-bar'),
-        monitorList: $('#monitor-list'),
-        coinWatchlist: $('#coin-watchlist'),
-        keywordWatchlist: $('#keyword-watchlist'),
-        statusText: $('#status-text'),
-        wsText: $('#ws-text'),
-        wsClients: $('#ws-clients'),
-        uptimeDisplay: $('#uptime-display'),
-        statReceived: $('#stat-received'),
-        statMatched: $('#stat-matched'),
-        statDeduped: $('#stat-deduped'),
-        statDispatched: $('#stat-dispatched'),
-        toastContainer: $('#toast-container'),
-    };
-
-    // ── Platform Config ─────────────────────────────────────────
-    const PLATFORM_META = {
-        telegram: { icon: '📱', label: 'Telegram', color: '#0088cc' },
-        discord:  { icon: '🎮', label: 'Discord',  color: '#5865f2' },
-        twitter:  { icon: '🐦', label: 'X',        color: '#1da1f2' },
-        reddit:   { icon: '🔴', label: 'Reddit',   color: '#ff4500' },
-    };
-
-    // ── WebSocket Connection ────────────────────────────────────
-
-    function connectWebSocket() {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws`;
-
-        state.ws = new WebSocket(wsUrl);
-
-        state.ws.onopen = () => {
-            state.wsRetryCount = 0;
-            updateWsStatus('connected');
-            showToast('⚡ Live feed connected', 'success');
-        };
-
-        state.ws.onmessage = (event) => {
-            try {
-                const msg = JSON.parse(event.data);
-                if (msg.type === 'alert') {
-                    handleNewAlert(msg.data);
-                } else if (msg.type === 'status') {
-                    updateStats(msg.data);
-                }
-            } catch (e) {
-                console.error('Failed to parse WebSocket message:', e);
-            }
-        };
-
-        state.ws.onclose = () => {
-            updateWsStatus('disconnected');
-            attemptReconnect();
-        };
-
-        state.ws.onerror = () => {
-            updateWsStatus('error');
-        };
-
-        // Heartbeat ping every 30s
-        setInterval(() => {
-            if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-                state.ws.send('ping');
-            }
-        }, 30000);
+        this.initElements();
+        this.bindEvents();
+        this.initWebSocket();
+        this.loadMatches();
+        this.loadStatus();
     }
 
-    function attemptReconnect() {
-        if (state.wsRetryCount >= state.wsMaxRetries) {
-            updateWsStatus('failed');
+    initElements() {
+        this.matchesViewport = document.getElementById('matches-viewport');
+        this.filterTabs = document.querySelectorAll('.filter-tab');
+        this.searchInput = document.getElementById('match-search');
+        this.clearSearchBtn = document.getElementById('clear-search-btn');
+        this.btnTriggerScrape = document.getElementById('btn-trigger-scrape');
+        this.wsIndicator = document.getElementById('ws-indicator');
+        this.wsStatusText = document.getElementById('ws-status-text');
+        this.displayDate = document.getElementById('display-date');
+        this.toastContainer = document.getElementById('toast-container');
+
+        // Metric elements
+        this.metricTotal = document.getElementById('metric-total-today');
+        this.metricLive = document.getElementById('metric-live-now');
+        this.metricFeatured = document.getElementById('metric-featured-count');
+        this.metricFinished = document.getElementById('metric-finished-count');
+
+        // Badges
+        this.badgeAll = document.getElementById('badge-all');
+        this.badgeLive = document.getElementById('badge-live');
+        this.badgeTop = document.getElementById('badge-top');
+        this.badgeUpcoming = document.getElementById('badge-upcoming');
+        this.badgeFinished = document.getElementById('badge-finished');
+        this.badgeSaved = document.getElementById('badge-saved');
+
+        // Set today's date in header
+        const today = new Date();
+        this.displayDate.textContent = today.toLocaleDateString('en-US', {
+            weekday: 'short',
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric'
+        });
+    }
+
+    bindEvents() {
+        // Tab Filtering
+        this.filterTabs.forEach(tab => {
+            tab.addEventListener('click', (e) => {
+                const targetTab = e.currentTarget;
+                this.filterTabs.forEach(t => t.classList.remove('active'));
+                targetTab.classList.add('active');
+                this.currentFilter = targetTab.dataset.filter;
+                this.renderMatches();
+            });
+        });
+
+        // Search Input
+        this.searchInput.addEventListener('input', (e) => {
+            this.searchQuery = e.target.value.trim().toLowerCase();
+            this.clearSearchBtn.style.display = this.searchQuery ? 'block' : 'none';
+            this.renderMatches();
+        });
+
+        this.clearSearchBtn.addEventListener('click', () => {
+            this.searchInput.value = '';
+            this.searchQuery = '';
+            this.clearSearchBtn.style.display = 'none';
+            this.renderMatches();
+        });
+
+        // On-demand scrape trigger
+        this.btnTriggerScrape.addEventListener('click', () => {
+            this.triggerScrape();
+        });
+    }
+
+    async loadMatches() {
+        try {
+            const res = await fetch('/api/matches/today');
+            if (!res.ok) throw new Error('Failed to load matches');
+            this.matches = await res.json();
+            this.updateMetrics();
+            this.renderMatches();
+        } catch (err) {
+            console.error(err);
+            this.showToast('⚠️ Could not connect to API server', 'error');
+        }
+    }
+
+    async loadStatus() {
+        try {
+            const res = await fetch('/api/status');
+            if (res.ok) {
+                const data = await res.json();
+                console.log('Bot status:', data);
+            }
+        } catch (e) {}
+    }
+
+    async triggerScrape() {
+        this.btnTriggerScrape.classList.add('loading');
+        this.btnTriggerScrape.disabled = true;
+        this.showToast('🔄 Opening SofaScore to fetch today\'s fixtures...');
+
+        try {
+            const res = await fetch('/api/scrape/trigger', { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                this.showToast('✅ ' + data.message, 'success');
+                await this.loadMatches();
+            } else {
+                this.showToast('❌ Scrape failed', 'error');
+            }
+        } catch (err) {
+            this.showToast('❌ Error contacting scraper', 'error');
+        } finally {
+            this.btnTriggerScrape.classList.remove('loading');
+            this.btnTriggerScrape.disabled = false;
+        }
+    }
+
+    async toggleBookmark(matchId, buttonEl) {
+        try {
+            const res = await fetch(`/api/matches/${matchId}/bookmark`, { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                const match = this.matches.find(m => m.match_id === matchId);
+                if (match) {
+                    match.bookmarked = !match.bookmarked;
+                    buttonEl.classList.toggle('bookmarked', match.bookmarked);
+                    this.updateMetrics();
+                    if (this.currentFilter === 'saved') {
+                        this.renderMatches();
+                    }
+                    this.showToast(match.bookmarked ? '📌 Match pinned to watchlist' : 'Unpinned match');
+                }
+            }
+        } catch (e) {
+            this.showToast('Error updating bookmark', 'error');
+        }
+    }
+
+    updateMetrics() {
+        const total = this.matches.length;
+        const live = this.matches.filter(m => m.status_type === 'inprogress').length;
+        const featured = this.matches.filter(m => m.is_featured).length;
+        const finished = this.matches.filter(m => m.status_type === 'finished').length;
+        const upcoming = this.matches.filter(m => m.status_type === 'notstarted').length;
+        const saved = this.matches.filter(m => m.bookmarked).length;
+
+        this.metricTotal.textContent = total;
+        this.metricLive.textContent = live;
+        this.metricFeatured.textContent = featured;
+        this.metricFinished.textContent = finished;
+
+        this.badgeAll.textContent = total;
+        this.badgeLive.textContent = live;
+        this.badgeTop.textContent = featured;
+        this.badgeUpcoming.textContent = upcoming;
+        this.badgeFinished.textContent = finished;
+        this.badgeSaved.textContent = saved;
+    }
+
+    getFilteredMatches() {
+        return this.matches.filter(m => {
+            // Tab filter
+            if (this.currentFilter === 'live' && m.status_type !== 'inprogress') return false;
+            if (this.currentFilter === 'top' && !m.is_featured) return false;
+            if (this.currentFilter === 'upcoming' && m.status_type !== 'notstarted') return false;
+            if (this.currentFilter === 'finished' && m.status_type !== 'finished') return false;
+            if (this.currentFilter === 'saved' && !m.bookmarked) return false;
+
+            // Search query
+            if (this.searchQuery) {
+                const searchCorpus = `${m.home_team} ${m.away_team} ${m.tournament_name} ${m.category_name}`.toLowerCase();
+                if (!searchCorpus.includes(this.searchQuery)) return false;
+            }
+
+            return true;
+        });
+    }
+
+    renderMatches() {
+        const filtered = this.getFilteredMatches();
+
+        if (filtered.length === 0) {
+            this.matchesViewport.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-title">⚽ No matches found</div>
+                    <div class="empty-desc">
+                        ${this.searchQuery ? `No fixtures matched "${this.escapeHtml(this.searchQuery)}".` : 'No fixtures currently match the active filter.'}
+                    </div>
+                </div>
+            `;
             return;
         }
 
-        state.wsRetryCount++;
-        const delay = Math.min(state.wsRetryDelay * Math.pow(1.5, state.wsRetryCount - 1), 30000);
-        updateWsStatus('reconnecting');
-
-        setTimeout(() => connectWebSocket(), delay);
-    }
-
-    function updateWsStatus(status) {
-        const statusMap = {
-            connected:    { text: 'WebSocket: live', color: '#34d399' },
-            disconnected: { text: 'WebSocket: disconnected', color: '#fb7185' },
-            reconnecting: { text: `WebSocket: reconnecting (${state.wsRetryCount})...`, color: '#fbbf24' },
-            error:        { text: 'WebSocket: error', color: '#fb7185' },
-            failed:       { text: 'WebSocket: failed', color: '#fb7185' },
-        };
-
-        const info = statusMap[status] || statusMap.disconnected;
-        dom.wsText.textContent = info.text;
-        dom.wsText.style.color = info.color;
-    }
-
-    // ── Alert Handling ──────────────────────────────────────────
-
-    function handleNewAlert(data) {
-        // Add to state (newest first)
-        state.alerts.unshift(data);
-
-        // Cap at 200 alerts in memory
-        if (state.alerts.length > 200) {
-            state.alerts = state.alerts.slice(0, 200);
-        }
-
-        // Render if passes current filter
-        if (state.activeFilter === 'all' || state.activeFilter === data.platform) {
-            prependAlertCard(data, true);
-            hideEmptyState();
-        }
-    }
-
-    function prependAlertCard(alert, isNew = false) {
-        const card = createAlertCard(alert, isNew);
-        dom.alertFeed.insertBefore(card, dom.alertFeed.firstChild);
-
-        // Remove excess cards from DOM (keep max 100)
-        const cards = dom.alertFeed.querySelectorAll('.alert-card');
-        if (cards.length > 100) {
-            for (let i = 100; i < cards.length; i++) {
-                cards[i].remove();
+        // Group by Tournament
+        const groups = {};
+        filtered.forEach(m => {
+            const key = m.tournament_name;
+            if (!groups[key]) {
+                groups[key] = {
+                    name: m.tournament_name,
+                    category: m.category_name,
+                    is_featured: m.is_featured,
+                    matches: []
+                };
             }
-        }
-    }
+            groups[key].matches.push(m);
+        });
 
-    function createAlertCard(alert, isNew = false) {
-        const meta = PLATFORM_META[alert.platform] || PLATFORM_META.telegram;
-        const timeStr = formatTime(alert.timestamp);
-        const catText = alert.category || 'other';
-        const langText = alert.language || 'en';
-        
-        const truncatedText = alert.text.length > 280
-            ? alert.text.substring(0, 280) + '...'
-            : alert.text;
+        // Sort groups: featured first, then name
+        const sortedGroups = Object.values(groups).sort((a, b) => {
+            if (a.is_featured && !b.is_featured) return -1;
+            if (!a.is_featured && b.is_featured) return 1;
+            return a.name.localeCompare(b.name);
+        });
 
-        const card = document.createElement('div');
-        card.className = `alert-card${isNew ? ' new' : ''}`;
-        card.dataset.platform = alert.platform;
-        card.dataset.alertId = alert.id || '';
+        let html = '';
+        sortedGroups.forEach(group => {
+            html += `
+                <div class="league-group">
+                    <div class="league-header">
+                        <div class="league-title-box">
+                            <span class="league-icon">${group.is_featured ? '⭐' : '🏆'}</span>
+                            <div>
+                                <span class="league-name">${this.escapeHtml(group.name)}</span>
+                                <span class="league-country"> • ${this.escapeHtml(group.category)}</span>
+                            </div>
+                        </div>
+                        <span class="league-count">${group.matches.length} ${group.matches.length === 1 ? 'game' : 'games'}</span>
+                    </div>
 
-        // Build tags
-        const keywordTags = (alert.matched_keywords || [])
-            .map(k => `<span class="tag keyword">${k}</span>`)
-            .join('');
-
-        // Build link
-        const linkHtml = alert.link
-            ? `<a href="${escapeHtml(alert.link)}" target="_blank" rel="noopener" class="action-btn" title="Open source">🔗 Open</a>`
-            : '';
-
-        card.innerHTML = `
-            <div class="alert-header">
-                <div class="alert-platform">
-                    <div class="platform-icon ${alert.platform}">${meta.icon}</div>
-                    <div>
-                        <div class="platform-name">${meta.label} <span style="font-size: 0.85em; color: var(--text-muted)">[${langText}]</span></div>
-                        <div class="alert-source">${escapeHtml(alert.source_name || 'Source')} · ${escapeHtml(alert.author)}</div>
+                    <div class="matches-grid">
+                        ${group.matches.map(m => this.renderMatchCard(m)).join('')}
                     </div>
                 </div>
-                <span class="alert-severity severity-high">🏷️ ${escapeHtml(catText.toUpperCase())}</span>
-            </div>
-            <div class="alert-body">
-                <strong>📝 Summary:</strong><br/>
-                ${escapeHtml(alert.summary || alert.text)}
-                <div style="margin-top: 12px; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 4px; font-size: 13px; color: var(--text-muted)">
-                    <em>Original Text:</em><br/>
-                    ${escapeHtml(truncatedText)}
+            `;
+        });
+
+        this.matchesViewport.innerHTML = html;
+
+        // Bind bookmark buttons
+        this.matchesViewport.querySelectorAll('.btn-bookmark').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const matchId = parseInt(btn.dataset.matchId, 10);
+                this.toggleBookmark(matchId, btn);
+            });
+        });
+    }
+
+    renderMatchCard(m) {
+        const isLive = m.status_type === 'inprogress';
+        let statusBadgeClass = m.status_type;
+        let statusLabel = m.status_description;
+
+        if (isLive) {
+            statusLabel = m.minute ? `${m.minute}'` : 'LIVE';
+        } else if (m.status_type === 'finished') {
+            statusLabel = 'FT';
+        }
+
+        const homeScore = m.home_score !== null ? m.home_score : '-';
+        const awayScore = m.away_score !== null ? m.away_score : '-';
+        
+        let kickTime = '';
+        if (m.start_time) {
+            const d = new Date(m.start_time);
+            kickTime = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) + ' UTC';
+        }
+
+        return `
+            <div class="match-card ${isLive ? 'is-live' : ''}" id="card-${m.match_id}">
+                <div class="match-header">
+                    <div class="match-meta">
+                        <span>${m.round_info || 'Fixture'}</span>
+                    </div>
+                    <div class="status-pill ${statusBadgeClass}">${statusLabel}</div>
                 </div>
-            </div>
-            <div class="alert-tags">${keywordTags}</div>
-            <div class="alert-footer">
-                <span class="alert-time">${timeStr}</span>
-                <div class="alert-actions">
-                    ${linkHtml}
-                    <button class="action-btn dismiss" onclick="ginNews.dismissAlert(this, ${alert.id || 0})" title="Dismiss">✅ Dismiss</button>
-                    <button class="action-btn mute" onclick="ginNews.muteSource(this, ${alert.id || 0})" title="Mute source for 1h">🔇 Mute</button>
-                    <button class="action-btn save" onclick="ginNews.saveAlert(this, ${alert.id || 0})" title="Bookmark">📌 Save</button>
+
+                <div class="teams-container">
+                    <div class="team-row">
+                        <div class="team-name-box">
+                            <span class="team-name">${this.escapeHtml(m.home_team)}</span>
+                        </div>
+                        <span class="team-score">${homeScore}</span>
+                    </div>
+
+                    <div class="team-row">
+                        <div class="team-name-box">
+                            <span class="team-name">${this.escapeHtml(m.away_team)}</span>
+                        </div>
+                        <span class="team-score">${awayScore}</span>
+                    </div>
+                </div>
+
+                <div class="match-footer">
+                    <span class="kickoff-time">🕒 ${kickTime}</span>
+                    <div class="card-actions">
+                        <button class="btn-icon-action btn-bookmark ${m.bookmarked ? 'bookmarked' : ''}" data-match-id="${m.match_id}" title="Pin to Watchlist">
+                            📌
+                        </button>
+                        ${m.sofascore_url ? `
+                            <a href="${m.sofascore_url}" target="_blank" rel="noopener noreferrer" class="btn-icon-action" title="Open on SofaScore">
+                                ↗
+                            </a>
+                        ` : ''}
+                    </div>
                 </div>
             </div>
         `;
-
-        // Remove 'new' class after animation
-        if (isNew) {
-            setTimeout(() => card.classList.remove('new'), 600);
-        }
-
-        return card;
     }
 
-    // ── Alert Actions ───────────────────────────────────────────
+    initWebSocket() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
 
-    async function dismissAlert(btn, alertId) {
-        if (!alertId) return;
-        btn.classList.add('done');
-        btn.textContent = '✅ Done';
         try {
-            await fetch(`/api/alerts/${alertId}/dismiss`, { method: 'POST' });
-            showToast('✅ Alert dismissed', 'success');
+            this.ws = new WebSocket(wsUrl);
+
+            this.ws.onopen = () => {
+                this.wsIndicator.classList.remove('offline');
+                this.wsIndicator.classList.add('online');
+                this.wsStatusText.textContent = 'Live Sync';
+                console.log('WebSocket connected to SofaScore live stream');
+            };
+
+            this.ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'match_alert') {
+                        this.handleLiveMatchAlert(msg);
+                    }
+                } catch (e) {
+                    console.error('Error handling WebSocket message', e);
+                }
+            };
+
+            this.ws.onclose = () => {
+                this.wsIndicator.classList.remove('online');
+                this.wsIndicator.classList.add('offline');
+                this.wsStatusText.textContent = 'Reconnecting...';
+                this.reconnectTimeout = setTimeout(() => this.initWebSocket(), 3000);
+            };
+
+            this.ws.onerror = () => {
+                this.ws.close();
+            };
         } catch (e) {
-            showToast('⚠️ Failed to dismiss', 'error');
-            btn.classList.remove('done');
+            console.error('WebSocket init error', e);
         }
     }
 
-    async function muteSource(btn, alertId) {
-        if (!alertId) return;
-        btn.classList.add('done');
-        btn.textContent = '🔇 Muted';
-        try {
-            await fetch(`/api/alerts/${alertId}/mute?hours=1`, { method: 'POST' });
-            showToast('🔇 Source muted for 1 hour', 'success');
-        } catch (e) {
-            showToast('⚠️ Failed to mute', 'error');
-            btn.classList.remove('done');
-        }
-    }
+    handleLiveMatchAlert(msg) {
+        const alertData = msg.data;
+        if (!alertData) return;
 
-    async function saveAlert(btn, alertId) {
-        if (!alertId) return;
-        btn.classList.add('done');
-        btn.textContent = '📌 Saved';
-        try {
-            await fetch(`/api/alerts/${alertId}/save`, { method: 'POST' });
-            showToast('📌 Alert bookmarked', 'success');
-        } catch (e) {
-            showToast('⚠️ Failed to save', 'error');
-            btn.classList.remove('done');
-        }
-    }
-
-    // ── Filtering ───────────────────────────────────────────────
-
-    function initFilters() {
-        dom.filterBar.addEventListener('click', (e) => {
-            const btn = e.target.closest('.filter-btn');
-            if (!btn) return;
-
-            // Update active state
-            dom.filterBar.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-
-            state.activeFilter = btn.dataset.filter;
-            renderAlertFeed();
-        });
-    }
-
-    function renderAlertFeed() {
-        // Clear existing cards
-        dom.alertFeed.querySelectorAll('.alert-card').forEach(c => c.remove());
-
-        const filtered = state.activeFilter === 'all'
-            ? state.alerts
-            : state.alerts.filter(a => a.platform === state.activeFilter);
-
-        if (filtered.length === 0) {
-            showEmptyState();
-            return;
+        // Show toast notification
+        if (msg.alert_type === 'goal') {
+            this.showToast(`⚽ ${msg.message}`, 'goal');
+        } else {
+            this.showToast(`📢 ${msg.message}`);
         }
 
-        hideEmptyState();
-        // Render in batches with staggered animation
-        filtered.slice(0, 50).forEach((alert, i) => {
-            const card = createAlertCard(alert);
-            card.style.animationDelay = `${i * 0.03}s`;
-            dom.alertFeed.appendChild(card);
-        });
-    }
-
-    function showEmptyState() {
-        dom.emptyState.style.display = 'flex';
-    }
-
-    function hideEmptyState() {
-        dom.emptyState.style.display = 'none';
-    }
-
-    // ── Data Fetching ───────────────────────────────────────────
-
-    async function fetchInitialAlerts() {
-        try {
-            const res = await fetch('/api/alerts?limit=50');
-            if (!res.ok) return;
-            const alerts = await res.json();
-            state.alerts = alerts.map(a => ({
-                ...a,
-                timestamp: a.created_at,
-            }));
-            renderAlertFeed();
-        } catch (e) {
-            console.warn('Failed to fetch initial alerts:', e);
+        // Update in-memory match
+        const idx = this.matches.findIndex(m => m.match_id === alertData.match_id);
+        if (idx !== -1) {
+            this.matches[idx] = { ...this.matches[idx], ...alertData };
+        } else {
+            this.matches.push(alertData);
         }
+
+        this.updateMetrics();
+        this.renderMatches();
     }
 
-    async function fetchStatus() {
-        try {
-            const res = await fetch('/api/status');
-            if (!res.ok) return;
-            const status = await res.json();
-            updateStats(status);
-            updateMonitors(status.monitors);
-            dom.statusText.textContent = status.status === 'running' ? 'System Active' : status.status;
-        } catch (e) {
-            dom.statusText.textContent = 'Offline';
-        }
-    }
-
-    async function fetchConfig() {
-        try {
-            const res = await fetch('/api/config');
-            if (!res.ok) return;
-            const config = await res.json();
-            renderWatchlist(config);
-        } catch (e) {
-            console.warn('Failed to fetch config:', e);
-        }
-    }
-
-    // ── UI Updates ──────────────────────────────────────────────
-
-    function updateStats(data) {
-        const stats = data.stats || data;
-        if (stats.received !== undefined) dom.statReceived.textContent = formatNumber(stats.received);
-        if (stats.matched !== undefined) dom.statMatched.textContent = formatNumber(stats.matched);
-        if (stats.deduplicated !== undefined) dom.statDeduped.textContent = formatNumber(stats.deduplicated);
-        if (stats.dispatched !== undefined) dom.statDispatched.textContent = formatNumber(stats.dispatched);
-
-        if (data.uptime_seconds !== undefined) {
-            dom.uptimeDisplay.textContent = formatUptime(data.uptime_seconds);
-        }
-        if (data.websocket_clients !== undefined) {
-            dom.wsClients.textContent = data.websocket_clients;
-        }
-    }
-
-    function updateMonitors(monitors) {
-        if (!monitors || !monitors.length) return;
-
-        const monitorIcons = {
-            telegram: '📱',
-            discord: '🎮',
-            twitter: '🐦',
-        };
-
-        dom.monitorList.innerHTML = monitors.map(m => {
-            const name = m.charAt(0).toUpperCase() + m.slice(1);
-            const icon = m.startsWith('reddit') ? '🔴' : (monitorIcons[m] || '📡');
-            return `
-                <div class="monitor-item">
-                    <div class="monitor-info">
-                        <span class="monitor-icon">${icon}</span>
-                        <span class="monitor-name">${escapeHtml(name)}</span>
-                    </div>
-                    <span class="monitor-status active">Active</span>
-                </div>
-            `;
-        }).join('');
-    }
-
-    function renderWatchlist(config) {
-        if (config.coins) {
-            dom.coinWatchlist.innerHTML = config.coins
-                .map(c => `<span class="watch-tag">${escapeHtml(c.toUpperCase())}</span>`)
-                .join('');
-        }
-        if (config.keywords) {
-            dom.keywordWatchlist.innerHTML = config.keywords
-                .map(k => `<span class="watch-tag">${escapeHtml(k)}</span>`)
-                .join('');
-        }
-    }
-
-    // ── Toast Notifications ─────────────────────────────────────
-
-    function showToast(message, type = 'info') {
-        const icons = { success: '✅', error: '❌', info: 'ℹ️' };
+    showToast(message, type = 'info') {
         const toast = document.createElement('div');
-        toast.className = 'toast';
-        toast.innerHTML = `<span>${icons[type] || ''}</span><span>${escapeHtml(message)}</span>`;
-        dom.toastContainer.appendChild(toast);
+        toast.className = `toast ${type}`;
+        toast.textContent = message;
+        this.toastContainer.appendChild(toast);
 
         setTimeout(() => {
-            toast.classList.add('leaving');
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(10px)';
+            toast.style.transition = 'all 0.3s ease';
             setTimeout(() => toast.remove(), 300);
-        }, 3000);
+        }, 4000);
     }
 
-    // ── Utilities ───────────────────────────────────────────────
-
-    function escapeHtml(str) {
+    escapeHtml(str) {
         if (!str) return '';
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
+}
 
-    function formatTime(isoString) {
-        if (!isoString) return '';
-        try {
-            const date = new Date(isoString);
-            const now = new Date();
-            const diffMs = now - date;
-            const diffMin = Math.floor(diffMs / 60000);
-
-            if (diffMin < 1) return 'just now';
-            if (diffMin < 60) return `${diffMin}m ago`;
-            if (diffMin < 1440) return `${Math.floor(diffMin / 60)}h ago`;
-            return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-        } catch {
-            return isoString;
-        }
-    }
-
-    function formatNumber(n) {
-        if (n === undefined || n === null) return '—';
-        if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-        if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-        return n.toLocaleString();
-    }
-
-    function formatUptime(seconds) {
-        const h = Math.floor(seconds / 3600);
-        const m = Math.floor((seconds % 3600) / 60);
-        if (h > 0) return `${h}h ${m}m`;
-        return `${m}m`;
-    }
-
-    // ── Initialization ──────────────────────────────────────────
-
-    function init() {
-        initFilters();
-        fetchInitialAlerts();
-        fetchStatus();
-        fetchConfig();
-        connectWebSocket();
-
-        // Poll status every 15 seconds
-        state.statusPollInterval = setInterval(fetchStatus, 15000);
-    }
-
-    // Expose action functions globally for inline onclick handlers
-    window.ginNews = { dismissAlert, muteSource, saveAlert };
-
-    // Boot
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
-        init();
-    }
-})();
+// Bootstrap on DOM ready
+document.addEventListener('DOMContentLoaded', () => {
+    window.app = new FootballApp();
+});

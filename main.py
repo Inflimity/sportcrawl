@@ -218,7 +218,12 @@ async def main() -> None:
                 logger.error("Error in digest scheduler: %s", e)
                 await asyncio.sleep(60)
 
-    # ── 8. Set up graceful shutdown ──────────────────────────────────
+    # ── 8. Initialise dashboard API ──────────────────────────────────
+    app = create_app()
+    init_routes(db, engine, settings, monitor=monitor)
+    logger.info("Dashboard API & Web UI ready at http://localhost:8000")
+
+    # ── 9. Set up graceful shutdown ──────────────────────────────────
     shutdown_event = asyncio.Event()
 
     def _signal_handler() -> None:
@@ -232,7 +237,7 @@ async def main() -> None:
         except NotImplementedError:
             pass
 
-    # ── 9. Launch background tasks ───────────────────────────────────
+    # ── 10. Launch background tasks ──────────────────────────────────
     async def run_services() -> None:
         uvicorn_config = uvicorn.Config(
             app,

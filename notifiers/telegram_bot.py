@@ -232,6 +232,7 @@ class TelegramNotifier:
             # Commands
             self._app.add_handler(CommandHandler(["start", "help"], self._cmd_help))
             self._app.add_handler(CommandHandler(["today", "games", "matches"], self._cmd_today))
+            self._app.add_handler(CommandHandler(["upcoming", "fixtures", "schedule"], self._cmd_upcoming))
             self._app.add_handler(CommandHandler(["live"], self._cmd_live))
             self._app.add_handler(CommandHandler(["top", "featured"], self._cmd_top))
             self._app.add_handler(CommandHandler(["export", "file", "download", "json", "txt"], self._cmd_export))
@@ -253,32 +254,86 @@ class TelegramNotifier:
             return
         text = (
             "🤖 <b>Welcome to SportCrawl Football Bot!</b>\n\n"
-            "Track today's football fixtures, live scores, and major European leagues in real-time.\n\n"
+            "Track today's football fixtures, upcoming matches, live scores, and major leagues in Nigerian Time (WAT).\n\n"
             "<b>Available Commands:</b>\n"
             "📅 /today — View all scheduled games for today\n"
+            "🕒 /upcoming — View upcoming matches that have NOT started yet\n"
             "🔴 /live — View currently live in-play games\n"
-            "⭐ /top — View Top 5 European Leagues & UCL games\n"
-            "📁 /export — Download full matches list as .txt or .json\n"
+            "⭐ /top — View Top European & international leagues\n"
+            "📁 /export — Download full matches list (.txt / .json)\n"
             "🔄 /refresh — Trigger fresh scrape from SofaScore\n"
             "❓ /help — Show this help message"
         )
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("📅 Today's Games", callback_data="btn_today"),
+                InlineKeyboardButton("🕒 Upcoming Games", callback_data="btn_upcoming"),
+            ],
+            [
                 InlineKeyboardButton("🔴 Live Scores", callback_data="btn_live"),
+                InlineKeyboardButton("⭐ Top Leagues", callback_data="btn_top"),
             ],
             [
                 InlineKeyboardButton("📄 Download TXT", callback_data="btn_export_txt"),
                 InlineKeyboardButton("📊 Download JSON", callback_data="btn_export_json"),
-            ],
-            [
-                InlineKeyboardButton("⭐ Top Leagues", callback_data="btn_top"),
-                InlineKeyboardButton("🔄 Refresh Now", callback_data="btn_refresh"),
             ]
         ])
         await update.effective_message.reply_text(
             text, parse_mode=ParseMode.HTML, reply_markup=keyboard
         )
+
+    async def _cmd_upcoming(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handler for /upcoming and /fixtures command (games that haven't started yet)."""
+        if not update.effective_message or not self._db:
+            return
+
+        today_str = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d")
+        all_matches = await self._db.get_matches_for_date(today_str)
+
+        if not all_matches and self._monitor:
+            status_msg = await update.effective_message.reply_text("🔄 Fetching today's fixtures from SofaScore...")
+            raw_matches = await self._monitor.fetch_today_matches(today_str)
+            for m in raw_matches:
+                await self._db.upsert_match(m, is_featured=m.get("is_featured", False))
+            all_matches = await self._db.get_matches_for_date(today_str)
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+
+        upcoming_matches = [m for m in all_matches if m.status_type == "notstarted"]
+
+        if not upcoming_matches:
+            await update.effective_message.reply_text(
+                f"ℹ️ No upcoming unstarted matches found for today ({today_str}). All matches may have finished or are in play."
+            )
+            return
+
+        featured_upcoming = [m for m in upcoming_matches if m.is_featured]
+        display_matches = featured_upcoming if featured_upcoming else upcoming_matches[:25]
+
+        chunks = format_matches_message(
+            display_matches,
+            f"🕒 Upcoming Matches ({len(display_matches)} of {len(upcoming_matches)} unstarted games today)"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(f"📄 Download All {len(all_matches)} Games (.txt)", callback_data="btn_export_txt"),
+            ],
+            [
+                InlineKeyboardButton("📅 All Today", callback_data="btn_today"),
+                InlineKeyboardButton("🔴 Live Only", callback_data="btn_live"),
+            ]
+        ])
+
+        for i, chunk in enumerate(chunks):
+            reply_markup = keyboard if i == len(chunks) - 1 else None
+            await update.effective_message.reply_text(
+                chunk,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_markup=reply_markup,
+            )
 
     async def _cmd_today(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handler for /today command."""
@@ -445,6 +500,8 @@ class TelegramNotifier:
         data = query.data
         if data == "btn_today":
             await self._cmd_today(update, context)
+        elif data == "btn_upcoming":
+            await self._cmd_upcoming(update, context)
         elif data == "btn_live":
             await self._cmd_live(update, context)
         elif data == "btn_top":

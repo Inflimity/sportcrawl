@@ -26,7 +26,7 @@ _STATIC_DIR = _PROJECT_ROOT / "static"
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
-        title="SofaScore Football Match Intelligence",
+        title="SportCrawl — Football Match Intelligence",
         description="Real-time football fixtures, live scores, and tournament tracking",
         version="2.0.0",
     )

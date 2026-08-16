@@ -138,7 +138,7 @@ class TelegramNotifier:
         if not update.effective_message:
             return
         text = (
-            "🤖 <b>Welcome to SofaScore Football Bot!</b>\n\n"
+            "🤖 <b>Welcome to SportCrawl Football Bot!</b>\n\n"
             "Track today's football fixtures, live scores, and major European leagues in real-time.\n\n"
             "<b>Available Commands:</b>\n"
             "📅 /today — View all scheduled games for today\n"

@@ -1,4 +1,4 @@
-# ⚽ SofaScore Football Match Intelligence Bot
+# ⚽ SportCrawl — SofaScore Football Match Intelligence Bot
 
 Autonomous football intelligence and fixture tracking engine powered by **Playwright**, **FastAPI**, **SQLAlchemy**, and **Telegram Bot API**.
 

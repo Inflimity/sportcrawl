@@ -1,5 +1,5 @@
 """
-SofaScore Football Bot — Autonomous Match Intelligence & Notification Engine.
+SportCrawl — SofaScore Football Match Intelligence & Notification Engine.
 
 Scrapes today's football fixtures from SofaScore, detects live scores & goals,
 provides interactive Telegram bot commands (/today, /live, /top), and serves
@@ -35,19 +35,19 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
     stream=sys.stdout,
 )
-logger = logging.getLogger("SofaScoreFootballBot")
+logger = logging.getLogger("SportCrawl")
 
 
 def print_banner() -> None:
     """Print ASCII art banner."""
     print(r"""
 ========================================================================
-  ____        __        ____                          ____        _   
- / ___|  ___ / _| __ _ / ___|  ___ ___  _ __ ___     | __ )  ___ | |_ 
- \___ \ / _ \ |_ / _` |\___ \ / __/ _ \| '__/ _ \    |  _ \ / _ \| __|
-  ___) | (_) |  _| (_| | ___) | (_| (_) | | |  __/    | |_) | (_) | |_ 
- |____/ \___/|_|  \__,_||____/ \___\___/|_|  \___|    |____/ \___/ \__|
-                                                                      
+  ____                  _      ____                     _ 
+ / ___| _ __   ___  _ __| |_  / ___|_ __ __ ___      _| |
+ \___ \| '_ \ / _ \| '__| __|| |   | '__/ _` \ \ /\ / / |
+  ___) | |_) | (_) | |  | |_ | |___| | | (_| |\ V  V /| |
+ |____/| .__/ \___/|_|   \__| \____|_|  \__,_| \_/\_/ |_|
+       |_|                                                
 ========================================================================
 """)
 

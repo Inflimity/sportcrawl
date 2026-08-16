@@ -536,32 +536,54 @@ class TelegramNotifier:
         send_files: bool = True,
         format_type: str = "both",
     ) -> None:
-        """Send scheduled digest with top fixtures and attached TXT/JSON files."""
+        """Send scheduled digest: a single concise overview message + full TXT/JSON file attachments."""
         if not self._db:
             return
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         all_matches = await self._db.get_matches_for_date(today_str)
-        featured_matches = [m for m in all_matches if m.is_featured]
-        matches_to_show = featured_matches if featured_matches else all_matches
 
-        if not matches_to_show:
+        if not all_matches:
             logger.info("No matches available for scheduled digest on %s", today_str)
             return
 
-        # 1. Send formatted text summary
-        chunks = format_matches_message(matches_to_show, f"{title} ({today_str})")
-        for chunk in chunks:
-            try:
-                await self._bot.send_message(
-                    chat_id=self._admin_chat_id,
-                    text=chunk,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                )
-            except Exception as e:
-                logger.warning("Failed to send scheduled digest message: %s", e)
+        total_count = len(all_matches)
+        live_count = sum(1 for m in all_matches if m.status_type == "inprogress")
+        finished_count = sum(1 for m in all_matches if m.status_type == "finished")
+        upcoming_count = sum(1 for m in all_matches if m.status_type == "notstarted")
+        featured_count = sum(1 for m in all_matches if m.is_featured)
 
-        # 2. Send TXT / JSON document attachments
+        # 1. Send single clean digest card (1 message only to avoid rate limits)
+        summary_text = (
+            f"<b>{title}</b> ({today_str})\n\n"
+            f"📊 <b>Today's Fixtures Snapshot:</b>\n"
+            f"• ⚽ Total Matches Worldwide: <b>{total_count}</b>\n"
+            f"• 🔴 In-Play / Live Now: <b>{live_count}</b>\n"
+            f"• 🏁 Finished Games: <b>{finished_count}</b>\n"
+            f"• 🕒 Upcoming Fixtures: <b>{upcoming_count}</b>\n"
+            f"• ⭐ Top League Games: <b>{featured_count}</b>\n\n"
+            f"📁 <i>Complete match list, live scores, and links are attached below in the file export:</i>"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(f"📄 Download All {total_count} Games (.txt)", callback_data="btn_export_txt"),
+            ],
+            [
+                InlineKeyboardButton("📊 Download JSON", callback_data="btn_export_json"),
+                InlineKeyboardButton("🔴 Live Only", callback_data="btn_live"),
+            ]
+        ])
+
+        try:
+            await self._bot.send_message(
+                chat_id=self._admin_chat_id,
+                text=summary_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+        except Exception as e:
+            logger.warning("Failed to send scheduled digest summary card: %s", e)
+
+        # 2. Attach full TXT / JSON document attachments directly
         if send_files:
             await self.send_matches_document(
                 chat_id=self._admin_chat_id,

@@ -271,11 +271,11 @@ class SofaScoreMonitor:
         finally:
             await browser.close()
 
-        # Normalize and filter
+        # Normalize and filter (ensure match_date matches requested date)
         normalized_matches = []
         for ev in collected_events.values():
             norm = self._normalize_event(ev)
-            if norm:
+            if norm and norm.get("match_date") == date_str:
                 normalized_matches.append(norm)
 
         # Sort: featured first, then kickoff timestamp, then league

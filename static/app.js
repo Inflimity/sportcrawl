@@ -43,14 +43,15 @@ class FootballApp {
         this.badgeFinished = document.getElementById('badge-finished');
         this.badgeSaved = document.getElementById('badge-saved');
 
-        // Set today's date in header
+        // Set today's date in header (Nigerian Time / WAT)
         const today = new Date();
         this.displayDate.textContent = today.toLocaleDateString('en-US', {
+            timeZone: 'Africa/Lagos',
             weekday: 'short',
             month: 'short',
             day: 'numeric',
             year: 'numeric'
-        });
+        }) + ' (WAT)';
     }
 
     bindEvents() {
@@ -278,7 +279,12 @@ class FootballApp {
         let kickTime = '';
         if (m.start_time) {
             const d = new Date(m.start_time);
-            kickTime = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) + ' UTC';
+            kickTime = d.toLocaleTimeString('en-US', {
+                timeZone: 'Africa/Lagos',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+            }) + ' WAT';
         }
 
         return `

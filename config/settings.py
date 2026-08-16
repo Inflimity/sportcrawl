@@ -61,10 +61,10 @@ class Settings(BaseSettings):
         "Supercopa",
     ]
 
-    # ── Live Score Alert Notifications ──────────────────────────────────
-    notify_goal_events: bool = True
-    notify_kickoff_events: bool = True
-    notify_match_ended: bool = True
+    # ── Live Score Alert Notifications (Disabled by default to prevent chat spam)
+    notify_goal_events: bool = False
+    notify_kickoff_events: bool = False
+    notify_match_ended: bool = False
 
     # ── Deduplication & Cache ───────────────────────────────────────────
     redis_url: Optional[str] = None

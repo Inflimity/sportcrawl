@@ -101,13 +101,15 @@ class SofaScoreMonitor:
                 return None
 
             tournament = event.get("tournament", {})
+            tournament_id = tournament.get("id")
             tournament_name = tournament.get("name", "Unknown Tournament")
             category_name = tournament.get("category", {}).get("name", "International")
             
             # Check if featured league
             is_featured = (
-                tournament_name.lower() in self._featured_leagues_set
-                or any(fl in tournament_name.lower() for fl in self._featured_leagues_set)
+                tournament_id in POPULAR_TOURNAMENT_IDS
+                or tournament_name.lower() in self._featured_leagues_set
+                or f"{category_name} - {tournament_name}".lower() in self._featured_leagues_set
             )
 
             home_team_data = event.get("homeTeam", {})

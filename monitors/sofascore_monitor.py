@@ -79,11 +79,17 @@ class SofaScoreMonitor:
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--disable-sync",
+                "--js-flags=--max-old-space-size=128",
                 "--disable-blink-features=AutomationControlled",
             ],
         )
         context = await browser.new_context(
-            viewport={"width": 1400, "height": 900},
+            viewport={"width": 1280, "height": 720},
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -201,15 +207,15 @@ class SofaScoreMonitor:
         page.on("response", on_response)
 
         try:
-            # Navigate to football section
+            # Navigate to football section with 15s timeout
             await page.goto(
                 "https://www.sofascore.com/football",
                 wait_until="domcontentloaded",
-                timeout=self.settings.sofascore_timeout_ms,
+                timeout=15000,
             )
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(1500)
 
-            # 2. Fetch all global categories and popular tournaments concurrently
+            # 2. Fetch all global categories and popular tournaments with strict timeout
             logger.info("Querying global categories & tournaments in session context...")
             global_events = await page.evaluate(
                 """async ({tournaments, targetDate}) => {
@@ -218,7 +224,9 @@ class SofaScoreMonitor:
                     // 1. Query popular tournaments
                     for (const tid of tournaments) {
                         try {
-                            const res = await fetch(`https://www.sofascore.com/api/v1/unique-tournament/${tid}/scheduled-events/${targetDate}`);
+                            const res = await fetch(`https://www.sofascore.com/api/v1/unique-tournament/${tid}/scheduled-events/${targetDate}`, {
+                                signal: AbortSignal.timeout(2500)
+                            });
                             if (res.ok) {
                                 const json = await res.json();
                                 if (json.events) results.push(...json.events);
@@ -226,31 +234,31 @@ class SofaScoreMonitor:
                         } catch (err) {}
                     }
 
-                    // 2. Query all football categories globally
+                    // 2. Query top 75 major countries/categories with timeout
                     try {
-                        const catRes = await fetch('https://www.sofascore.com/api/v1/sport/football/categories/all');
+                        const catRes = await fetch('https://www.sofascore.com/api/v1/sport/football/categories/all', {
+                            signal: AbortSignal.timeout(3000)
+                        });
                         if (catRes.ok) {
                             const catData = await catRes.json();
-                            const categories = catData.categories || [];
+                            const categories = (catData.categories || []).slice(0, 80);
                             
-                            // Fetch categories in parallel batches of 40 for ultra-fast scraping
-                            const batchSize = 40;
-                            for (let i = 0; i < categories.length; i += batchSize) {
-                                const batch = categories.slice(i, i + batchSize);
-                                const batchPromises = batch.map(async (cat) => {
-                                    try {
-                                        const r = await fetch(`https://www.sofascore.com/api/v1/category/${cat.id}/scheduled-events/${targetDate}`);
-                                        if (r.ok) {
-                                            const d = await r.json();
-                                            return d.events || [];
-                                        }
-                                    } catch (e) {}
-                                    return [];
-                                });
-                                const batchResults = await Promise.all(batchPromises);
-                                for (const evs of batchResults) {
-                                    results.push(...evs);
-                                }
+                            const promises = categories.map(async (cat) => {
+                                try {
+                                    const r = await fetch(`https://www.sofascore.com/api/v1/category/${cat.id}/scheduled-events/${targetDate}`, {
+                                        signal: AbortSignal.timeout(2500)
+                                    });
+                                    if (r.ok) {
+                                        const d = await r.json();
+                                        return d.events || [];
+                                    }
+                                } catch (e) {}
+                                return [];
+                            });
+
+                            const batchResults = await Promise.all(promises);
+                            for (const evs of batchResults) {
+                                results.push(...evs);
                             }
                         }
                     } catch (catErr) {}

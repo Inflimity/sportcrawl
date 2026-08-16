@@ -55,6 +55,7 @@ class SofaScoreMonitor:
         self._playwright = None
         self._browser: Optional[Browser] = None
         self._callbacks: list[Callable[[dict[str, Any]], Coroutine[Any, Any, None]]] = []
+        self._cycle_complete_callbacks: list[Callable[[list[dict[str, Any]]], Coroutine[Any, Any, None]]] = []
         self._featured_leagues_set = {
             league.lower() for league in (self.settings.featured_leagues if isinstance(self.settings.featured_leagues, list) else [self.settings.featured_leagues])
         }
@@ -62,6 +63,10 @@ class SofaScoreMonitor:
     def on_match(self, callback: Callable[[dict[str, Any]], Coroutine[Any, Any, None]]) -> None:
         """Register a callback for newly scraped or updated match data."""
         self._callbacks.append(callback)
+
+    def on_cycle_complete(self, callback: Callable[[list[dict[str, Any]]], Coroutine[Any, Any, None]]) -> None:
+        """Register a callback invoked when a full scrape cycle completes."""
+        self._cycle_complete_callbacks.append(callback)
 
     async def _create_browser_context(self) -> tuple[Browser, BrowserContext, Page]:
         """Launch Playwright Chromium with stealth headers."""
@@ -273,6 +278,14 @@ class SofaScoreMonitor:
                             await callback(match)
                         except Exception as cb_err:
                             logger.error("Error in SofaScore callback: %s", cb_err)
+
+                # Trigger cycle complete callbacks (e.g. sending matches document)
+                for cycle_cb in self._cycle_complete_callbacks:
+                    try:
+                        await cycle_cb(matches)
+                    except Exception as cycle_err:
+                        logger.error("Error in cycle complete callback: %s", cycle_err)
+
             except Exception as poll_err:
                 logger.error("Error in SofaScore polling cycle: %s", poll_err)
 

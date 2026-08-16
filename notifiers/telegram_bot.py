@@ -1,20 +1,23 @@
 """
-Telegram Bot Notifier for SofaScore Football Matches.
+Telegram Bot Notifier for SportCrawl / SofaScore Football Matches.
 
 Provides interactive commands:
 - /today or /games — List of today's football fixtures grouped by league
 - /live — Currently live matches with live scores and minutes
 - /top — Featured / Top European leagues and competitions
+- /export or /file — Download full matches list as formatted .txt or .json file
 - /refresh — Force refresh fixtures from SofaScore
 - /help — Command reference & bot status
 
-Supports rich inline keyboards, match bookmarking, and goal notifications.
+Supports rich inline keyboards, document attachments (.txt / .json), match bookmarking, and goal notifications.
 """
 
 from __future__ import annotations
 
 import asyncio
 import html as html_lib
+import io
+import json
 import logging
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -40,7 +43,7 @@ def _escape(text: str) -> str:
 
 
 def _format_match_row(match: FootballMatch) -> str:
-    """Format a single match fixture line for Telegram."""
+    """Format a single match fixture line for Telegram message text."""
     t_str = match.start_time.strftime("%H:%M")
     
     if match.status_type == "inprogress":
@@ -87,8 +90,98 @@ def format_matches_message(matches: list[FootballMatch], title: str = "📅 Toda
     return chunks
 
 
+def generate_matches_txt(matches: list[FootballMatch], date_str: str) -> io.BytesIO:
+    """Generate a clean formatted plain-text document of all matches for the day."""
+    output = io.StringIO()
+    output.write("=" * 75 + "\n")
+    output.write(f" SPORTCRAWL — TODAY'S FOOTBALL FIXTURES & RESULTS ({date_str})\n")
+    output.write(f" Total Matches: {len(matches)} | Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
+    output.write("=" * 75 + "\n\n")
+
+    grouped: dict[str, list[FootballMatch]] = defaultdict(list)
+    for m in matches:
+        key = f"{m.category_name} - {m.tournament_name}" if m.category_name and m.category_name != m.tournament_name else m.tournament_name
+        grouped[key].append(m)
+
+    for league, league_matches in grouped.items():
+        is_feat = any(m.is_featured for m in league_matches)
+        prefix = "[FEATURED] " if is_feat else ""
+        output.write(f"=== {prefix}{league.upper()} ({len(league_matches)} matches) ===\n")
+        
+        for m in league_matches:
+            t_str = m.start_time.strftime("%H:%M UTC") if m.start_time else "--:--"
+            h_score = m.home_score if m.home_score is not None else ""
+            a_score = m.away_score if m.away_score is not None else ""
+            score_str = f"{h_score} - {a_score}" if h_score != "" else "vs"
+            
+            status = m.status_description
+            if m.status_type == "inprogress":
+                status = f"LIVE ({m.minute or 'In Play'})"
+            elif m.status_type == "finished":
+                status = "FT"
+            else:
+                status = f"Kickoff {t_str}"
+
+            output.write(f"  • Match ID: {m.match_id}\n")
+            output.write(f"    Teams:    {m.home_team} {score_str} {m.away_team}\n")
+            output.write(f"    Status:   {status}\n")
+            if m.home_score_ht is not None and m.away_score_ht is not None:
+                output.write(f"    HT Score: {m.home_score_ht} - {m.away_score_ht}\n")
+            if m.sofascore_url:
+                output.write(f"    URL:      {m.sofascore_url}\n")
+            output.write("\n")
+        output.write("\n")
+
+    bio = io.BytesIO(output.getvalue().encode("utf-8"))
+    bio.seek(0)
+    return bio
+
+
+def generate_matches_json(matches: list[FootballMatch], date_str: str) -> io.BytesIO:
+    """Generate a structured JSON document containing full match data."""
+    data = {
+        "source": "SportCrawl / SofaScore",
+        "date": date_str,
+        "total_matches": len(matches),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "matches": [
+            {
+                "match_id": m.match_id,
+                "slug": m.slug,
+                "tournament": m.tournament_name,
+                "category": m.category_name,
+                "round": m.round_info,
+                "is_featured": m.is_featured,
+                "home_team": {
+                    "id": m.home_team_id,
+                    "name": m.home_team,
+                    "score": m.home_score,
+                    "score_ht": m.home_score_ht,
+                },
+                "away_team": {
+                    "id": m.away_team_id,
+                    "name": m.away_team,
+                    "score": m.away_score,
+                    "score_ht": m.away_score_ht,
+                },
+                "start_time_utc": m.start_time.isoformat() if m.start_time else "",
+                "status_type": m.status_type,
+                "status_description": m.status_description,
+                "minute": m.minute,
+                "sofascore_url": m.sofascore_url,
+                "bookmarked": m.bookmarked,
+            }
+            for m in matches
+        ],
+    }
+    json_bytes = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+    bio = io.BytesIO(json_bytes)
+    bio.seek(0)
+    return bio
+
+
 class TelegramNotifier:
-    """Sends football updates and handles interactive bot commands."""
+    """Sends football updates, file attachments, and handles interactive bot commands."""
 
     def __init__(
         self,
@@ -121,6 +214,7 @@ class TelegramNotifier:
             self._app.add_handler(CommandHandler(["today", "games", "matches"], self._cmd_today))
             self._app.add_handler(CommandHandler(["live"], self._cmd_live))
             self._app.add_handler(CommandHandler(["top", "featured"], self._cmd_top))
+            self._app.add_handler(CommandHandler(["export", "file", "download", "json", "txt"], self._cmd_export))
             self._app.add_handler(CommandHandler(["refresh"], self._cmd_refresh))
 
             # Callbacks
@@ -144,6 +238,7 @@ class TelegramNotifier:
             "📅 /today — View all scheduled games for today\n"
             "🔴 /live — View currently live in-play games\n"
             "⭐ /top — View Top 5 European Leagues & UCL games\n"
+            "📁 /export — Download full matches list as .txt or .json\n"
             "🔄 /refresh — Trigger fresh scrape from SofaScore\n"
             "❓ /help — Show this help message"
         )
@@ -151,6 +246,10 @@ class TelegramNotifier:
             [
                 InlineKeyboardButton("📅 Today's Games", callback_data="btn_today"),
                 InlineKeyboardButton("🔴 Live Scores", callback_data="btn_live"),
+            ],
+            [
+                InlineKeyboardButton("📄 Download TXT", callback_data="btn_export_txt"),
+                InlineKeyboardButton("📊 Download JSON", callback_data="btn_export_json"),
             ],
             [
                 InlineKeyboardButton("⭐ Top Leagues", callback_data="btn_top"),
@@ -184,10 +283,11 @@ class TelegramNotifier:
         chunks = format_matches_message(matches, f"📅 Today's Football Fixtures ({today_str})")
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("🔴 Live Only", callback_data="btn_live"),
-                InlineKeyboardButton("⭐ Top Leagues", callback_data="btn_top"),
+                InlineKeyboardButton("📄 Download TXT", callback_data="btn_export_txt"),
+                InlineKeyboardButton("📊 Download JSON", callback_data="btn_export_json"),
             ],
             [
+                InlineKeyboardButton("🔴 Live Only", callback_data="btn_live"),
                 InlineKeyboardButton("🔄 Refresh", callback_data="btn_refresh"),
             ]
         ])
@@ -200,6 +300,34 @@ class TelegramNotifier:
                 disable_web_page_preview=True,
                 reply_markup=reply_markup,
             )
+
+    async def _cmd_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handler for /export /file /json /txt commands."""
+        if not update.effective_message or not self._db:
+            return
+
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        matches = await self._db.get_matches_for_date(today_str)
+
+        if not matches and self._monitor:
+            raw_matches = await self._monitor.fetch_today_matches(today_str)
+            for m in raw_matches:
+                await self._db.upsert_match(m, is_featured=m.get("is_featured", False))
+            matches = await self._db.get_matches_for_date(today_str)
+
+        if not matches:
+            await update.effective_message.reply_text("❌ No matches available to export for today.")
+            return
+
+        cmd_text = update.effective_message.text.lower() if update.effective_message.text else ""
+        fmt = "txt" if "txt" in cmd_text else ("json" if "json" in cmd_text else "both")
+
+        await self.send_matches_document(
+            chat_id=update.effective_chat.id,
+            format_type=fmt,
+            date_str=today_str,
+            matches=matches,
+        )
 
     async def _cmd_live(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handler for /live command."""
@@ -234,7 +362,7 @@ class TelegramNotifier:
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("📅 All Matches", callback_data="btn_today"),
-                InlineKeyboardButton("🔴 Live Only", callback_data="btn_live"),
+                InlineKeyboardButton("📄 Download TXT", callback_data="btn_export_txt"),
             ]
         ])
         for i, chunk in enumerate(chunks):
@@ -257,7 +385,17 @@ class TelegramNotifier:
         for m in matches:
             await self._db.upsert_match(m, is_featured=m.get("is_featured", False))
 
-        await status_msg.edit_text(f"✅ Refreshed! Found {len(matches)} matches for today. Use /today to view.")
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📅 View Today", callback_data="btn_today"),
+                InlineKeyboardButton("📄 Download TXT", callback_data="btn_export_txt"),
+                InlineKeyboardButton("📊 JSON", callback_data="btn_export_json"),
+            ]
+        ])
+        await status_msg.edit_text(
+            f"✅ Refreshed! Found {len(matches)} matches for today ({today_str}).",
+            reply_markup=keyboard,
+        )
 
     async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle inline button clicks."""
@@ -275,6 +413,76 @@ class TelegramNotifier:
             await self._cmd_top(update, context)
         elif data == "btn_refresh":
             await self._cmd_refresh(update, context)
+        elif data == "btn_export_txt":
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            matches = await self._db.get_matches_for_date(today_str) if self._db else []
+            await self.send_matches_document(
+                chat_id=update.effective_chat.id,
+                format_type="txt",
+                date_str=today_str,
+                matches=matches,
+            )
+        elif data == "btn_export_json":
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            matches = await self._db.get_matches_for_date(today_str) if self._db else []
+            await self.send_matches_document(
+                chat_id=update.effective_chat.id,
+                format_type="json",
+                date_str=today_str,
+                matches=matches,
+            )
+
+    async def send_matches_document(
+        self,
+        chat_id: int,
+        format_type: str = "both",
+        date_str: Optional[str] = None,
+        matches: Optional[list[FootballMatch]] = None,
+    ) -> None:
+        """Generate and send TXT and/or JSON fixtures document to Telegram chat."""
+        if not date_str:
+            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        if matches is None and self._db:
+            matches = await self._db.get_matches_for_date(date_str)
+
+        if not matches:
+            logger.info("No matches found to send as document for %s", date_str)
+            return
+
+        # 1. Send TXT file
+        if format_type in ("txt", "both"):
+            try:
+                txt_bio = generate_matches_txt(matches, date_str)
+                filename = f"sportcrawl_matches_{date_str}.txt"
+                caption = f"📄 <b>SportCrawl Matches List</b> ({date_str})\n⚽ Total Fixtures: <b>{len(matches)}</b>"
+                await self._bot.send_document(
+                    chat_id=chat_id,
+                    document=txt_bio,
+                    filename=filename,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                )
+                logger.info("Sent %s to chat %d", filename, chat_id)
+            except Exception as e:
+                logger.error("Failed to send TXT matches document: %s", e)
+
+        # 2. Send JSON file
+        if format_type in ("json", "both"):
+            try:
+                json_bio = generate_matches_json(matches, date_str)
+                filename = f"sportcrawl_matches_{date_str}.json"
+                caption = f"📊 <b>SportCrawl Full JSON Data</b> ({date_str})\n⚽ Total Fixtures: <b>{len(matches)}</b>"
+                await self._bot.send_document(
+                    chat_id=chat_id,
+                    document=json_bio,
+                    filename=filename,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                )
+                logger.info("Sent %s to chat %d", filename, chat_id)
+            except Exception as e:
+                logger.error("Failed to send JSON matches document: %s", e)
 
     async def send_match_alert(self, alert: MatchAlert) -> None:
         """Send a real-time event alert (Goal, Kickoff, Fulltime) to the admin chat."""
@@ -312,29 +520,6 @@ class TelegramNotifier:
             )
         except Exception as e:
             logger.warning("Failed to send Telegram match alert: %s", e)
-
-    async def send_daily_digest(self) -> None:
-        """Send morning fixtures digest to admin chat."""
-        if not self._db:
-            return
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        matches = await self._db.get_matches_for_date(today_str, featured_only=True)
-        if not matches:
-            matches = await self._db.get_matches_for_date(today_str)
-        if not matches:
-            return
-
-        chunks = format_matches_message(matches, f"🌅 Today's Top Football Fixtures ({today_str})")
-        for chunk in chunks:
-            try:
-                await self._bot.send_message(
-                    chat_id=self._admin_chat_id,
-                    text=chunk,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                )
-            except Exception as e:
-                logger.warning("Failed to send daily digest chunk: %s", e)
 
     async def close(self) -> None:
         """Shut down Telegram application and updater."""

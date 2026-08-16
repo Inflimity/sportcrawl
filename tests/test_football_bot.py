@@ -166,3 +166,51 @@ def test_telegram_message_formatting():
     assert len(chunks) == 1
     assert "Premier League" in chunks[0]
     assert "Liverpool" in chunks[0]
+
+
+def test_document_generation():
+    """Test generating plain text and JSON documents for Telegram attachments."""
+    from notifiers.telegram_bot import generate_matches_txt, generate_matches_json
+    import json
+
+    now = datetime.now(timezone.utc)
+    match = FootballMatch(
+        id=1,
+        match_id=888,
+        slug="arsenal-manchester-city",
+        tournament_name="Premier League",
+        category_name="England",
+        round_info="Round 1",
+        is_featured=True,
+        home_team="Arsenal",
+        away_team="Manchester City",
+        start_timestamp=int(now.timestamp()),
+        start_time=now,
+        match_date=now.strftime("%Y-%m-%d"),
+        status_type="inprogress",
+        status_description="1st half",
+        home_score=1,
+        away_score=0,
+        home_score_ht=1,
+        away_score_ht=0,
+        minute="35",
+        sofascore_url="https://www.sofascore.com/arsenal-manchester-city/888",
+    )
+
+    # Test TXT generation
+    txt_bio = generate_matches_txt([match], "2026-08-16")
+    txt_content = txt_bio.getvalue().decode("utf-8")
+    assert "SPORTCRAWL" in txt_content
+    assert "Arsenal" in txt_content
+    assert "Manchester City" in txt_content
+    assert "PREMIER LEAGUE" in txt_content
+
+    # Test JSON generation
+    json_bio = generate_matches_json([match], "2026-08-16")
+    json_content = json_bio.getvalue().decode("utf-8")
+    data = json.loads(json_content)
+    assert data["total_matches"] == 1
+    assert data["matches"][0]["match_id"] == 888
+    assert data["matches"][0]["home_team"]["name"] == "Arsenal"
+    assert data["matches"][0]["home_team"]["score"] == 1
+

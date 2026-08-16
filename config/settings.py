@@ -1,5 +1,5 @@
 """
-SofaScore Football Bot Settings — Central configuration loaded from environment variables.
+SportCrawl Settings — Central configuration loaded from environment variables.
 
 Uses pydantic-settings for type-safe validation with .env file support.
 """
@@ -27,9 +27,13 @@ class Settings(BaseSettings):
     admin_chat_id: int
 
     # ── SofaScore Scraping & Monitoring ─────────────────────────────────
-    sofascore_poll_interval_seconds: int = 120  # Interval between match updates
+    sofascore_poll_interval_seconds: int = 3600  # 1 hour interval between match updates
     sofascore_headless: bool = True
     sofascore_timeout_ms: int = 30000
+
+    # ── Match File Delivery (TXT / JSON) ─────────────────────────────────
+    send_matches_file_hourly: bool = True  # Automatically send full matches list to Telegram
+    matches_file_format: str = "both"  # "txt", "json", or "both"
 
     # ── Top / Featured Leagues & Competitions ────────────────────────────
     # Matches in these tournaments are prioritized in digests & alerts

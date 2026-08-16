@@ -52,7 +52,11 @@ def print_banner() -> None:
 """)
 
 
-async def cli_list_today(featured_only: bool = False) -> None:
+async def cli_list_today(
+    featured_only: bool = False,
+    send_telegram: bool = False,
+    format_type: str = "both",
+) -> None:
     """CLI mode: Open SofaScore, fetch today's fixtures and print cleanly to terminal."""
     print_banner()
     settings = get_settings()
@@ -101,6 +105,27 @@ async def cli_list_today(featured_only: bool = False) -> None:
 
         print()
 
+    # If requested, send document to Telegram directly
+    if send_telegram:
+        db = DatabaseManager(settings.database_url)
+        await db.init_db()
+        for m in matches:
+            await db.upsert_match(m, is_featured=m.get("is_featured", False))
+        notifier = TelegramNotifier(
+            bot_token=settings.telegram_bot_token,
+            admin_chat_id=settings.admin_chat_id,
+            db=db,
+        )
+        print(f"📤 Sending {format_type.upper()} document of today's fixtures to Telegram (Chat ID: {settings.admin_chat_id})...")
+        await notifier.send_matches_document(
+            chat_id=settings.admin_chat_id,
+            format_type=format_type,
+            date_str=today_str,
+        )
+        await notifier.close()
+        await db.close()
+        print("✅ Document successfully sent to Telegram!")
+
 
 async def main() -> None:
     """Bootstrap and run the SofaScore Football Bot system."""
@@ -143,6 +168,20 @@ async def main() -> None:
 
     # Connect monitor to engine
     monitor.on_match(engine.process_match)
+
+    # ── Hook up hourly matches file delivery to Telegram ─────────────
+    if settings.send_matches_file_hourly:
+        async def handle_cycle_complete(matches: list[dict[str, Any]]) -> None:
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            logger.info("Hourly scrape complete (%d fixtures). Sending %s document to Telegram...", len(matches), settings.matches_file_format.upper())
+            await notifier.send_matches_document(
+                chat_id=settings.admin_chat_id,
+                format_type=settings.matches_file_format,
+                date_str=today_str,
+            )
+
+        monitor.on_cycle_complete(handle_cycle_complete)
+        logger.info("Hourly Telegram document delivery enabled (Format: %s)", settings.matches_file_format.upper())
 
     # ── 6. Initialise dashboard API ──────────────────────────────────
     app = create_app()
@@ -219,10 +258,28 @@ def cli_entry() -> None:
         help="Filter CLI list to top/featured leagues only",
     )
 
+    parser.add_argument(
+        "--send-telegram",
+        action="store_true",
+        help="Also generate and send the full fixtures document (.txt and .json) to Telegram",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["txt", "json", "both"],
+        default="both",
+        help="Format of the fixtures document to send (txt, json, both)",
+    )
+
     args = parser.parse_args()
 
-    if args.list_today or args.top:
-        asyncio.run(cli_list_today(featured_only=args.top))
+    if args.list_today or args.top or args.send_telegram:
+        asyncio.run(
+            cli_list_today(
+                featured_only=args.top,
+                send_telegram=args.send_telegram,
+                format_type=args.format,
+            )
+        )
     else:
         asyncio.run(main())
 

@@ -315,21 +315,26 @@ class TelegramNotifier:
         if not update.effective_message or not self._db:
             return
 
+        cmd_text = update.effective_message.text.lower() if update.effective_message.text else ""
+        fmt = "txt" if "txt" in cmd_text else ("json" if "json" in cmd_text else "both")
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        status_msg = await update.effective_message.reply_text(f"⏳ Generating today's {fmt.upper()} fixtures document...")
+
         matches = await self._db.get_matches_for_date(today_str)
 
         if not matches and self._monitor:
+            await status_msg.edit_text("🔄 Database empty — fetching today's matches from SofaScore...")
             raw_matches = await self._monitor.fetch_today_matches(today_str)
             for m in raw_matches:
                 await self._db.upsert_match(m, is_featured=m.get("is_featured", False))
             matches = await self._db.get_matches_for_date(today_str)
 
         if not matches:
-            await update.effective_message.reply_text("❌ No matches available to export for today.")
+            await status_msg.edit_text("❌ No matches available to export for today.")
             return
 
-        cmd_text = update.effective_message.text.lower() if update.effective_message.text else ""
-        fmt = "txt" if "txt" in cmd_text else ("json" if "json" in cmd_text else "both")
+        await status_msg.edit_text(f"📤 Uploading {fmt.upper()} document ({len(matches)} fixtures)...")
 
         await self.send_matches_document(
             chat_id=update.effective_chat.id,
@@ -337,6 +342,10 @@ class TelegramNotifier:
             date_str=today_str,
             matches=matches,
         )
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
 
     async def _cmd_live(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handler for /live command."""
@@ -422,21 +431,18 @@ class TelegramNotifier:
             await self._cmd_top(update, context)
         elif data == "btn_refresh":
             await self._cmd_refresh(update, context)
-        elif data == "btn_export_txt":
+        elif data in ("btn_export_txt", "btn_export_json"):
+            fmt = "txt" if data == "btn_export_txt" else "json"
             today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             matches = await self._db.get_matches_for_date(today_str) if self._db else []
+            if not matches and self._monitor and self._db:
+                raw_matches = await self._monitor.fetch_today_matches(today_str)
+                for m in raw_matches:
+                    await self._db.upsert_match(m, is_featured=m.get("is_featured", False))
+                matches = await self._db.get_matches_for_date(today_str)
             await self.send_matches_document(
                 chat_id=update.effective_chat.id,
-                format_type="txt",
-                date_str=today_str,
-                matches=matches,
-            )
-        elif data == "btn_export_json":
-            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            matches = await self._db.get_matches_for_date(today_str) if self._db else []
-            await self.send_matches_document(
-                chat_id=update.effective_chat.id,
-                format_type="json",
+                format_type=fmt,
                 date_str=today_str,
                 matches=matches,
             )

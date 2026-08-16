@@ -27,12 +27,14 @@ class Settings(BaseSettings):
     admin_chat_id: int
 
     # ── SofaScore Scraping & Monitoring ─────────────────────────────────
-    sofascore_poll_interval_seconds: int = 3600  # 1 hour interval between match updates
+    sofascore_poll_interval_seconds: int = 7200  # 2 hours interval
     sofascore_headless: bool = True
     sofascore_timeout_ms: int = 30000
 
-    # ── Match File Delivery (TXT / JSON) ─────────────────────────────────
-    send_matches_file_hourly: bool = True  # Automatically send full matches list to Telegram
+    # ── Key Scheduled Daily Digest Windows (Option C: 08:00, 15:00, 22:00)
+    daily_digest_enabled: bool = True
+    daily_digest_hours: str | list[int] = [8, 15, 22]  # Morning (08:00), Afternoon (15:00), Night (22:00)
+    send_digest_files: bool = True  # Attach .txt / .json file during scheduled digests
     matches_file_format: str = "both"  # "txt", "json", or "both"
 
     # ── Top / Featured Leagues & Competitions ────────────────────────────
@@ -59,11 +61,6 @@ class Settings(BaseSettings):
         "Supercopa",
     ]
 
-    # ── Daily Match Digest ──────────────────────────────────────────────
-    daily_digest_enabled: bool = True
-    daily_digest_hour: int = 8  # 08:00 AM (local time)
-    daily_digest_minute: int = 0
-
     # ── Live Score Alert Notifications ──────────────────────────────────
     notify_goal_events: bool = True
     notify_kickoff_events: bool = True
@@ -88,6 +85,17 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return [item.strip() for item in v.split(",") if item.strip()]
         return [item.strip() for item in v if item.strip()]
+
+    @field_validator(
+        "daily_digest_hours",
+        mode="before",
+    )
+    @classmethod
+    def parse_digest_hours(cls, v: str | list[int] | list[str]) -> list[int]:
+        """Parse comma-separated hour numbers e.g. '8,15,22' into a list of ints."""
+        if isinstance(v, str):
+            return [int(item.strip()) for item in v.split(",") if item.strip().isdigit()]
+        return [int(item) for item in v]
 
 
 def get_settings() -> Settings:

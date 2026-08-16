@@ -169,26 +169,56 @@ async def main() -> None:
     # Connect monitor to engine
     monitor.on_match(engine.process_match)
 
-    # ── Hook up hourly matches file delivery to Telegram ─────────────
-    if settings.send_matches_file_hourly:
-        async def handle_cycle_complete(matches: list[dict[str, Any]]) -> None:
-            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            logger.info("Hourly scrape complete (%d fixtures). Sending %s document to Telegram...", len(matches), settings.matches_file_format.upper())
-            await notifier.send_matches_document(
-                chat_id=settings.admin_chat_id,
-                format_type=settings.matches_file_format,
-                date_str=today_str,
-            )
+    # ── 7. Daily Digest Scheduler (Option C: 08:00, 15:00, 22:00) ────
+    async def run_digest_scheduler() -> None:
+        """Background loop checking and triggering scheduled daily digests."""
+        if not settings.daily_digest_enabled:
+            return
 
-        monitor.on_cycle_complete(handle_cycle_complete)
-        logger.info("Hourly Telegram document delivery enabled (Format: %s)", settings.matches_file_format.upper())
+        digest_hours = settings.daily_digest_hours if isinstance(settings.daily_digest_hours, list) else [8, 15, 22]
+        logger.info("Daily Digest Scheduler active — scheduled hours: %s", digest_hours)
+        fired_today: set[str] = set()
 
-    # ── 6. Initialise dashboard API ──────────────────────────────────
-    app = create_app()
-    init_routes(db, engine, settings, monitor=monitor)
-    logger.info("Dashboard API & Web UI ready at http://localhost:8000")
+        while True:
+            try:
+                now = datetime.now()
+                today_key = now.strftime("%Y-%m-%d")
+                current_hour = now.hour
 
-    # ── 7. Set up graceful shutdown ──────────────────────────────────
+                if current_hour in digest_hours:
+                    fire_key = f"{today_key}_{current_hour}"
+                    if fire_key not in fired_today:
+                        fired_today.add(fire_key)
+
+                        if current_hour < 12:
+                            digest_title = "🌅 Morning Football Fixtures Preview"
+                        elif current_hour < 18:
+                            digest_title = "⚡ Afternoon Match Updates & Live Scores"
+                        else:
+                            digest_title = "🌙 Night Match Recap & Results"
+
+                        logger.info("Triggering scheduled %s for hour %d:00...", digest_title, current_hour)
+                        
+                        # Refresh latest from SofaScore
+                        today_str = now.strftime("%Y-%m-%d")
+                        latest_matches = await monitor.fetch_today_matches(today_str)
+                        for m in latest_matches:
+                            await db.upsert_match(m, is_featured=m.get("is_featured", False))
+
+                        await notifier.send_daily_digest(
+                            title=digest_title,
+                            send_files=settings.send_digest_files,
+                            format_type=settings.matches_file_format,
+                        )
+
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Error in digest scheduler: %s", e)
+                await asyncio.sleep(60)
+
+    # ── 8. Set up graceful shutdown ──────────────────────────────────
     shutdown_event = asyncio.Event()
 
     def _signal_handler() -> None:
@@ -202,7 +232,7 @@ async def main() -> None:
         except NotImplementedError:
             pass
 
-    # ── 8. Launch background tasks ───────────────────────────────────
+    # ── 9. Launch background tasks ───────────────────────────────────
     async def run_services() -> None:
         uvicorn_config = uvicorn.Config(
             app,
@@ -217,6 +247,7 @@ async def main() -> None:
             asyncio.create_task(engine.start(), name="alert-engine"),
             asyncio.create_task(monitor.start(), name="sofascore-monitor"),
             asyncio.create_task(uvicorn_server.serve(), name="api-server"),
+            asyncio.create_task(run_digest_scheduler(), name="digest-scheduler"),
         ]
 
         await shutdown_event.wait()

@@ -521,6 +521,46 @@ class TelegramNotifier:
         except Exception as e:
             logger.warning("Failed to send Telegram match alert: %s", e)
 
+    async def send_daily_digest(
+        self,
+        title: str = "🌅 Today's Football Matches Digest",
+        send_files: bool = True,
+        format_type: str = "both",
+    ) -> None:
+        """Send scheduled digest with top fixtures and attached TXT/JSON files."""
+        if not self._db:
+            return
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        all_matches = await self._db.get_matches_for_date(today_str)
+        featured_matches = [m for m in all_matches if m.is_featured]
+        matches_to_show = featured_matches if featured_matches else all_matches
+
+        if not matches_to_show:
+            logger.info("No matches available for scheduled digest on %s", today_str)
+            return
+
+        # 1. Send formatted text summary
+        chunks = format_matches_message(matches_to_show, f"{title} ({today_str})")
+        for chunk in chunks:
+            try:
+                await self._bot.send_message(
+                    chat_id=self._admin_chat_id,
+                    text=chunk,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+            except Exception as e:
+                logger.warning("Failed to send scheduled digest message: %s", e)
+
+        # 2. Send TXT / JSON document attachments
+        if send_files:
+            await self.send_matches_document(
+                chat_id=self._admin_chat_id,
+                format_type=format_type,
+                date_str=today_str,
+                matches=all_matches,
+            )
+
     async def close(self) -> None:
         """Shut down Telegram application and updater."""
         if self._app:

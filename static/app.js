@@ -84,6 +84,19 @@ class FootballApp {
         this.btnTriggerScrape.addEventListener('click', () => {
             this.triggerScrape();
         });
+
+        // Download Dropdown Toggle
+        const dropdownExport = document.getElementById('dropdown-export');
+        const btnExport = document.getElementById('btn-export-dropdown');
+        if (btnExport && dropdownExport) {
+            btnExport.addEventListener('click', (e) => {
+                e.stopPropagation();
+                dropdownExport.classList.toggle('open');
+            });
+            document.addEventListener('click', () => {
+                dropdownExport.classList.remove('open');
+            });
+        }
     }
 
     async loadMatches() {

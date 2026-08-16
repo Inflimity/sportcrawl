@@ -104,14 +104,19 @@ def format_matches_message(matches: list[FootballMatch], title: str = "📅 Toda
     return chunks
 
 
-def generate_matches_txt(matches: list[FootballMatch], date_str: str) -> io.BytesIO:
-    """Generate a clean formatted plain-text document of all matches for the day in Nigerian Time."""
+def generate_matches_txt(
+    matches: list[FootballMatch],
+    date_str: str,
+    title_override: Optional[str] = None,
+) -> io.BytesIO:
+    """Generate a clean formatted plain-text document of matches for the day in Nigerian Time."""
     output = io.StringIO()
     now_wat = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d %I:%M:%S %p WAT")
+    doc_title = title_override or "TODAY'S FOOTBALL FIXTURES & RESULTS"
     output.write("=" * 75 + "\n")
-    output.write(f" SPORTCRAWL — TODAY'S FOOTBALL FIXTURES & RESULTS ({date_str})\n")
+    output.write(f" SPORTCRAWL — {doc_title.upper()} ({date_str})\n")
     output.write(f" Times shown in West Africa Time (WAT / Nigerian Time, UTC+1)\n")
-    output.write(f" Total Matches: {len(matches)} | Generated: {now_wat}\n")
+    output.write(f" Total Matches in File: {len(matches)} | Generated: {now_wat}\n")
     output.write("=" * 75 + "\n\n")
 
     grouped: dict[str, list[FootballMatch]] = defaultdict(list)
@@ -154,12 +159,17 @@ def generate_matches_txt(matches: list[FootballMatch], date_str: str) -> io.Byte
     return bio
 
 
-def generate_matches_json(matches: list[FootballMatch], date_str: str) -> io.BytesIO:
-    """Generate a structured JSON document containing full match data in WAT / UTC."""
+def generate_matches_json(
+    matches: list[FootballMatch],
+    date_str: str,
+    category_name: str = "all",
+) -> io.BytesIO:
+    """Generate a structured JSON document containing match data in WAT / UTC."""
     now_wat = datetime.now(LAGOS_TZ).isoformat()
     data = {
         "source": "SportCrawl / SofaScore",
         "date": date_str,
+        "filter": category_name,
         "timezone": "Africa/Lagos (WAT / UTC+1)",
         "total_matches": len(matches),
         "generated_at": now_wat,
@@ -318,10 +328,11 @@ class TelegramNotifier:
         )
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(f"📄 Download All {len(all_matches)} Games (.txt)", callback_data="btn_export_txt"),
+                InlineKeyboardButton(f"🕒 Download Upcoming TXT ({len(upcoming_matches)})", callback_data="btn_export_upcoming_txt"),
+                InlineKeyboardButton("📊 JSON", callback_data="btn_export_upcoming_json"),
             ],
             [
-                InlineKeyboardButton("📅 All Today", callback_data="btn_today"),
+                InlineKeyboardButton(f"📄 Download All {len(all_matches)} (.txt)", callback_data="btn_export_txt"),
                 InlineKeyboardButton("🔴 Live Only", callback_data="btn_live"),
             ]
         ])
@@ -340,7 +351,7 @@ class TelegramNotifier:
         if not update.effective_message or not self._db:
             return
 
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_str = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d")
         matches = await self._db.get_matches_for_date(today_str)
 
         # If DB is empty, try an immediate fetch
@@ -359,17 +370,21 @@ class TelegramNotifier:
         featured_matches = [m for m in all_matches if m.is_featured]
         display_matches = featured_matches if featured_matches else all_matches[:30]
 
+        upcoming_count = sum(1 for m in all_matches if m.status_type == "notstarted")
+        live_count = sum(1 for m in all_matches if m.status_type == "inprogress")
+
         chunks = format_matches_message(
             display_matches,
             f"📅 Today's Top Leagues ({len(display_matches)} of {len(all_matches)} total games worldwide)"
         )
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(f"📄 Download All {len(all_matches)} Games (.txt)", callback_data="btn_export_txt"),
+                InlineKeyboardButton(f"📄 All Games TXT ({len(all_matches)})", callback_data="btn_export_txt"),
+                InlineKeyboardButton(f"🕒 Upcoming TXT ({upcoming_count})", callback_data="btn_export_upcoming_txt"),
             ],
             [
-                InlineKeyboardButton("📊 Download Full JSON", callback_data="btn_export_json"),
-                InlineKeyboardButton("🔴 Live Only", callback_data="btn_live"),
+                InlineKeyboardButton(f"🔴 Live TXT ({live_count})", callback_data="btn_export_live_txt"),
+                InlineKeyboardButton("📊 Full JSON", callback_data="btn_export_json"),
             ],
             [
                 InlineKeyboardButton("🔄 Refresh SofaScore", callback_data="btn_refresh"),
@@ -391,36 +406,58 @@ class TelegramNotifier:
             return
 
         cmd_text = update.effective_message.text.lower() if update.effective_message.text else ""
-        fmt = "txt" if "txt" in cmd_text else ("json" if "json" in cmd_text else "both")
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-        status_msg = await update.effective_message.reply_text(f"⏳ Generating today's {fmt.upper()} fixtures document...")
+        today_str = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d")
 
         matches = await self._db.get_matches_for_date(today_str)
 
         if not matches and self._monitor:
-            await status_msg.edit_text("🔄 Database empty — fetching today's matches from SofaScore...")
+            status_msg = await update.effective_message.reply_text("🔄 Database empty — fetching today's matches from SofaScore...")
             raw_matches = await self._monitor.fetch_today_matches(today_str)
             for m in raw_matches:
                 await self._db.upsert_match(m, is_featured=m.get("is_featured", False))
             matches = await self._db.get_matches_for_date(today_str)
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
 
         if not matches:
-            await status_msg.edit_text("❌ No matches available to export for today.")
+            await update.effective_message.reply_text("❌ No matches available to export for today.")
             return
 
-        await status_msg.edit_text(f"📤 Uploading {fmt.upper()} document ({len(matches)} fixtures)...")
+        # Check for specific filter in command args (e.g. "/export upcoming" or "/export live")
+        fmt = "txt" if "txt" in cmd_text else ("json" if "json" in cmd_text else "both")
 
+        if "upcoming" in cmd_text or "fixture" in cmd_text:
+            upcoming = [m for m in matches if m.status_type == "notstarted"]
+            await self.send_matches_document(
+                chat_id=update.effective_chat.id,
+                format_type=fmt,
+                date_str=today_str,
+                matches=upcoming,
+                doc_type="upcoming",
+            )
+            return
+
+        if "live" in cmd_text:
+            live = [m for m in matches if m.status_type == "inprogress"]
+            await self.send_matches_document(
+                chat_id=update.effective_chat.id,
+                format_type=fmt,
+                date_str=today_str,
+                matches=live,
+                doc_type="live",
+            )
+            return
+
+        # Send full export
         await self.send_matches_document(
             chat_id=update.effective_chat.id,
             format_type=fmt,
             date_str=today_str,
             matches=matches,
+            doc_type="all",
         )
-        try:
-            await status_msg.delete()
-        except Exception:
-            pass
 
     async def _cmd_live(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handler for /live command."""
@@ -431,7 +468,11 @@ class TelegramNotifier:
         chunks = format_matches_message(live_matches, "🔴 Live Football Matches Now")
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("📅 All Today", callback_data="btn_today"),
+                InlineKeyboardButton(f"🔴 Download Live TXT ({len(live_matches)})", callback_data="btn_export_live_txt"),
+                InlineKeyboardButton("📊 Live JSON", callback_data="btn_export_live_json"),
+            ],
+            [
+                InlineKeyboardButton("🕒 Upcoming Games", callback_data="btn_upcoming"),
                 InlineKeyboardButton("🔄 Refresh", callback_data="btn_live"),
             ]
         ])
@@ -449,12 +490,13 @@ class TelegramNotifier:
         if not update.effective_message or not self._db:
             return
 
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_str = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d")
         matches = await self._db.get_matches_for_date(today_str, featured_only=True)
         chunks = format_matches_message(matches, f"⭐ Top Leagues & Featured Games ({today_str})")
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("📅 All Matches", callback_data="btn_today"),
+                InlineKeyboardButton("🕒 Upcoming", callback_data="btn_upcoming"),
                 InlineKeyboardButton("📄 Download TXT", callback_data="btn_export_txt"),
             ]
         ])
@@ -473,7 +515,7 @@ class TelegramNotifier:
             return
 
         status_msg = await update.effective_message.reply_text("🔄 Scraping latest fixtures from SofaScore...")
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_str = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d")
         matches = await self._monitor.fetch_today_matches(today_str)
         for m in matches:
             await self._db.upsert_match(m, is_featured=m.get("is_featured", False))
@@ -481,12 +523,12 @@ class TelegramNotifier:
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("📅 View Today", callback_data="btn_today"),
+                InlineKeyboardButton("🕒 Upcoming", callback_data="btn_upcoming"),
                 InlineKeyboardButton("📄 Download TXT", callback_data="btn_export_txt"),
-                InlineKeyboardButton("📊 JSON", callback_data="btn_export_json"),
             ]
         ])
         await status_msg.edit_text(
-            f"✅ Refreshed! Found {len(matches)} matches for today ({today_str}).",
+            f"✅ Refreshed! Found {len(matches)} matches for today ({today_str} WAT).",
             reply_markup=keyboard,
         )
 
@@ -498,6 +540,8 @@ class TelegramNotifier:
         await query.answer()
 
         data = query.data
+        today_str = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d")
+
         if data == "btn_today":
             await self._cmd_today(update, context)
         elif data == "btn_upcoming":
@@ -508,9 +552,29 @@ class TelegramNotifier:
             await self._cmd_top(update, context)
         elif data == "btn_refresh":
             await self._cmd_refresh(update, context)
+        elif data in ("btn_export_upcoming_txt", "btn_export_upcoming_json"):
+            fmt = "txt" if "txt" in data else "json"
+            all_m = await self._db.get_matches_for_date(today_str) if self._db else []
+            upcoming = [m for m in all_m if m.status_type == "notstarted"]
+            await self.send_matches_document(
+                chat_id=update.effective_chat.id,
+                format_type=fmt,
+                date_str=today_str,
+                matches=upcoming,
+                doc_type="upcoming",
+            )
+        elif data in ("btn_export_live_txt", "btn_export_live_json"):
+            fmt = "txt" if "txt" in data else "json"
+            live = await self._db.get_live_matches() if self._db else []
+            await self.send_matches_document(
+                chat_id=update.effective_chat.id,
+                format_type=fmt,
+                date_str=today_str,
+                matches=live,
+                doc_type="live",
+            )
         elif data in ("btn_export_txt", "btn_export_json"):
             fmt = "txt" if data == "btn_export_txt" else "json"
-            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             matches = await self._db.get_matches_for_date(today_str) if self._db else []
             if not matches and self._monitor and self._db:
                 raw_matches = await self._monitor.fetch_today_matches(today_str)
@@ -522,6 +586,7 @@ class TelegramNotifier:
                 format_type=fmt,
                 date_str=today_str,
                 matches=matches,
+                doc_type="all",
             )
 
     async def send_matches_document(
@@ -530,10 +595,11 @@ class TelegramNotifier:
         format_type: str = "both",
         date_str: Optional[str] = None,
         matches: Optional[list[FootballMatch]] = None,
+        doc_type: str = "all",
     ) -> None:
         """Generate and send TXT and/or JSON fixtures document to Telegram chat."""
         if not date_str:
-            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            date_str = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d")
 
         if matches is None and self._db:
             matches = await self._db.get_matches_for_date(date_str)
@@ -542,12 +608,29 @@ class TelegramNotifier:
             logger.info("No matches found to send as document for %s", date_str)
             return
 
+        if doc_type == "upcoming":
+            title = "Upcoming Football Fixtures"
+            prefix = "upcoming"
+            emoji = "🕒"
+        elif doc_type == "live":
+            title = "Live In-Play Football Matches"
+            prefix = "live"
+            emoji = "🔴"
+        elif doc_type == "top":
+            title = "Top Leagues & Featured Matches"
+            prefix = "top"
+            emoji = "⭐"
+        else:
+            title = "Today's Football Fixtures & Results"
+            prefix = "matches"
+            emoji = "📄"
+
         # 1. Send TXT file
         if format_type in ("txt", "both"):
             try:
-                txt_bio = generate_matches_txt(matches, date_str)
-                filename = f"sportcrawl_matches_{date_str}.txt"
-                caption = f"📄 <b>SportCrawl Matches List</b> ({date_str})\n⚽ Total Fixtures: <b>{len(matches)}</b>"
+                txt_bio = generate_matches_txt(matches, date_str, title_override=title)
+                filename = f"sportcrawl_{prefix}_{date_str}.txt"
+                caption = f"{emoji} <b>SportCrawl {title}</b> ({date_str})\n⚽ Total Fixtures: <b>{len(matches)}</b> (WAT)"
                 await self._bot.send_document(
                     chat_id=chat_id,
                     document=txt_bio,
@@ -562,9 +645,9 @@ class TelegramNotifier:
         # 2. Send JSON file
         if format_type in ("json", "both"):
             try:
-                json_bio = generate_matches_json(matches, date_str)
-                filename = f"sportcrawl_matches_{date_str}.json"
-                caption = f"📊 <b>SportCrawl Full JSON Data</b> ({date_str})\n⚽ Total Fixtures: <b>{len(matches)}</b>"
+                json_bio = generate_matches_json(matches, date_str, category_name=doc_type)
+                filename = f"sportcrawl_{prefix}_{date_str}.json"
+                caption = f"📊 <b>SportCrawl {title} (JSON)</b> ({date_str})\n⚽ Total Fixtures: <b>{len(matches)}</b> (WAT)"
                 await self._bot.send_document(
                     chat_id=chat_id,
                     document=json_bio,

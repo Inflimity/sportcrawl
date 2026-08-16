@@ -171,6 +171,74 @@ async def trigger_scrape():
     )
 
 
+@router.get("/export/txt")
+async def export_txt(filter: str = Query("all")):
+    """Export matches as downloadable plain-text document."""
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+    from notifiers.telegram_bot import LAGOS_TZ, generate_matches_txt
+    from fastapi.responses import Response
+
+    today_str = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d")
+    all_matches = await _db.get_matches_for_date(today_str)
+    
+    if filter == "upcoming":
+        matches = [m for m in all_matches if m.status_type == "notstarted"]
+        title = "Upcoming Football Fixtures"
+        filename = f"sportcrawl_upcoming_{today_str}.txt"
+    elif filter == "live":
+        matches = [m for m in all_matches if m.status_type == "inprogress"]
+        title = "Live In-Play Football Matches"
+        filename = f"sportcrawl_live_{today_str}.txt"
+    elif filter == "top":
+        matches = [m for m in all_matches if m.is_featured]
+        title = "Top Leagues & Featured Matches"
+        filename = f"sportcrawl_top_{today_str}.txt"
+    else:
+        matches = all_matches
+        title = "Today's Football Fixtures & Results"
+        filename = f"sportcrawl_matches_{today_str}.txt"
+
+    bio = generate_matches_txt(matches, today_str, title_override=title)
+    return Response(
+        content=bio.getvalue(),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+@router.get("/export/json")
+async def export_json(filter: str = Query("all")):
+    """Export matches as downloadable JSON document."""
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+    from notifiers.telegram_bot import LAGOS_TZ, generate_matches_json
+    from fastapi.responses import Response
+
+    today_str = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d")
+    all_matches = await _db.get_matches_for_date(today_str)
+    
+    if filter == "upcoming":
+        matches = [m for m in all_matches if m.status_type == "notstarted"]
+        filename = f"sportcrawl_upcoming_{today_str}.json"
+    elif filter == "live":
+        matches = [m for m in all_matches if m.status_type == "inprogress"]
+        filename = f"sportcrawl_live_{today_str}.json"
+    elif filter == "top":
+        matches = [m for m in all_matches if m.is_featured]
+        filename = f"sportcrawl_top_{today_str}.json"
+    else:
+        matches = all_matches
+        filename = f"sportcrawl_matches_{today_str}.json"
+
+    bio = generate_matches_json(matches, today_str, category_name=filter)
+    return Response(
+        content=bio.getvalue(),
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
 @router.get("/status", response_model=StatusResponse)
 async def get_status():
     """System health, uptime, and processing statistics."""

@@ -30,6 +30,25 @@
                         <span id="display-date">Today</span>
                     </div>
                     
+                    <!-- Download Options Dropdown -->
+                    <div class="dropdown-export" id="dropdown-export">
+                        <button class="btn-export" id="btn-export-dropdown" title="Download matches">
+                            <span>📥 Download</span>
+                            <span class="chevron">▾</span>
+                        </button>
+                        <div class="export-menu" id="export-menu">
+                            <div class="export-group-title">PLAIN TEXT (.TXT)</div>
+                            <a href="/api/export/txt?filter=all" download class="export-item">📄 All Today's Fixtures</a>
+                            <a href="/api/export/txt?filter=upcoming" download class="export-item">🕒 Upcoming Games Only</a>
+                            <a href="/api/export/txt?filter=live" download class="export-item">🔴 Live In-Play Games</a>
+                            <a href="/api/export/txt?filter=top" download class="export-item">⭐ Top Leagues Only</a>
+                            <div class="export-divider"></div>
+                            <div class="export-group-title">STRUCTURED DATA (.JSON)</div>
+                            <a href="/api/export/json?filter=all" download class="export-item">📊 Full JSON Data</a>
+                            <a href="/api/export/json?filter=upcoming" download class="export-item">🕒 Upcoming JSON</a>
+                        </div>
+                    </div>
+
                     <button class="btn-refresh" id="btn-trigger-scrape" title="Refresh fixtures from SofaScore">
                         <span class="refresh-icon">🔄</span>
                         <span class="btn-text">Refresh SofaScore</span>

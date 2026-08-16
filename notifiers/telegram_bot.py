@@ -280,15 +280,24 @@ class TelegramNotifier:
             except Exception:
                 pass
 
-        chunks = format_matches_message(matches, f"📅 Today's Football Fixtures ({today_str})")
+        all_matches = matches
+        featured_matches = [m for m in all_matches if m.is_featured]
+        display_matches = featured_matches if featured_matches else all_matches[:30]
+
+        chunks = format_matches_message(
+            display_matches,
+            f"📅 Today's Top Leagues ({len(display_matches)} of {len(all_matches)} total games worldwide)"
+        )
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("📄 Download TXT", callback_data="btn_export_txt"),
-                InlineKeyboardButton("📊 Download JSON", callback_data="btn_export_json"),
+                InlineKeyboardButton(f"📄 Download All {len(all_matches)} Games (.txt)", callback_data="btn_export_txt"),
             ],
             [
+                InlineKeyboardButton("📊 Download Full JSON", callback_data="btn_export_json"),
                 InlineKeyboardButton("🔴 Live Only", callback_data="btn_live"),
-                InlineKeyboardButton("🔄 Refresh", callback_data="btn_refresh"),
+            ],
+            [
+                InlineKeyboardButton("🔄 Refresh SofaScore", callback_data="btn_refresh"),
             ]
         ])
 

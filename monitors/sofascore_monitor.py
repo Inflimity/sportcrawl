@@ -207,11 +207,13 @@ class SofaScoreMonitor:
             )
             await page.wait_for_timeout(3000)
 
-            # 2. In addition to intercepted requests, fetch popular tournaments in page context
-            logger.info("Querying major football tournaments in session context...")
-            additional_events = await page.evaluate(
+            # 2. Fetch all global categories and popular tournaments concurrently
+            logger.info("Querying global categories & tournaments in session context...")
+            global_events = await page.evaluate(
                 """async ({tournaments, targetDate}) => {
                     const results = [];
+                    
+                    // 1. Query popular tournaments
                     for (const tid of tournaments) {
                         try {
                             const res = await fetch(`https://www.sofascore.com/api/v1/unique-tournament/${tid}/scheduled-events/${targetDate}`);
@@ -221,16 +223,46 @@ class SofaScoreMonitor:
                             }
                         } catch (err) {}
                     }
+
+                    // 2. Query all football categories globally
+                    try {
+                        const catRes = await fetch('https://www.sofascore.com/api/v1/sport/football/categories/all');
+                        if (catRes.ok) {
+                            const catData = await catRes.json();
+                            const categories = catData.categories || [];
+                            
+                            // Fetch categories in parallel batches of 15
+                            const batchSize = 15;
+                            for (let i = 0; i < categories.length; i += batchSize) {
+                                const batch = categories.slice(i, i + batchSize);
+                                const batchPromises = batch.map(async (cat) => {
+                                    try {
+                                        const r = await fetch(`https://www.sofascore.com/api/v1/category/${cat.id}/scheduled-events/${targetDate}`);
+                                        if (r.ok) {
+                                            const d = await r.json();
+                                            return d.events || [];
+                                        }
+                                    } catch (e) {}
+                                    return [];
+                                });
+                                const batchResults = await Promise.all(batchPromises);
+                                for (const evs of batchResults) {
+                                    results.push(...evs);
+                                }
+                            }
+                        }
+                    } catch (catErr) {}
+
                     return results;
                 }""",
                 {"tournaments": POPULAR_TOURNAMENT_IDS, "targetDate": date_str},
             )
 
-            for ev in additional_events:
+            for ev in global_events:
                 if "id" in ev:
                     collected_events[ev["id"]] = ev
 
-            logger.info("Captured %d raw match events from SofaScore", len(collected_events))
+            logger.info("Captured %d raw match events worldwide from SofaScore", len(collected_events))
 
         except Exception as e:
             logger.error("Error fetching matches from SofaScore: %s", e)

@@ -69,7 +69,7 @@ class SofaScoreMonitor:
         self._cycle_complete_callbacks.append(callback)
 
     async def _create_browser_context(self) -> tuple[Browser, BrowserContext, Page]:
-        """Launch Playwright Chromium with stealth headers."""
+        """Launch Playwright Chromium with full stealth headers."""
         if not self._playwright:
             self._playwright = await async_playwright().start()
         
@@ -95,8 +95,22 @@ class SofaScoreMonitor:
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/128.0.0.0 Safari/537.36"
             ),
+            locale="en-US",
+            timezone_id="UTC",
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+                "Sec-Ch-Ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"macOS"',
+            },
         )
         page = await context.new_page()
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.chrome = { runtime: {}, app: {}, csi: () => {}, loadTimes: () => {} };
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        """)
         return browser, context, page
 
     def _normalize_event(self, event: dict[str, Any]) -> Optional[dict[str, Any]]:

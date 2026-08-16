@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     daily_digest_hours: str | list[int] = [8, 15, 22]  # Morning (08:00), Afternoon (15:00), Night (22:00)
     send_digest_files: bool = True  # Attach .txt / .json file during scheduled digests
     matches_file_format: str = "both"  # "txt", "json", or "both"
+    app_timezone: str = "Africa/Lagos"  # West Africa Time (WAT / UTC+1) - Nigerian Time
 
     # ── Top / Featured Leagues & Competitions ────────────────────────────
     # Matches in these tournaments are prioritized in digests & alerts

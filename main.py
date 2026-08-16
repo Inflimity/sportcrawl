@@ -15,13 +15,15 @@ import signal
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
+from typing import Any
+from zoneinfo import ZoneInfo
 
 import uvicorn
 
 from api.routes import init_routes
 from api.server import create_app
 from api.websocket import ws_manager
-from config.settings import get_settings
+from config.settings import Settings, get_settings
 from core.engine import AlertEngine
 from monitors.sofascore_monitor import SofaScoreMonitor
 from notifiers.telegram_bot import TelegramNotifier
@@ -60,8 +62,9 @@ async def cli_list_today(
     """CLI mode: Open SofaScore, fetch today's fixtures and print cleanly to terminal."""
     print_banner()
     settings = get_settings()
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    print(f"🚀 Opening SofaScore to fetch today's football fixtures ({today_str})...\n")
+    tz = ZoneInfo(settings.app_timezone)
+    today_str = datetime.now(tz).strftime("%Y-%m-%d")
+    print(f"🚀 Opening SofaScore to fetch today's football fixtures ({today_str} WAT)...\n")
 
     monitor = SofaScoreMonitor(settings)
     matches = await monitor.fetch_today_matches(today_str)
@@ -88,7 +91,13 @@ async def cli_list_today(
         print("-" * 65)
 
         for m in league_matches:
-            t_str = m["start_time"].strftime("%H:%M UTC") if m.get("start_time") else "--:--"
+            st = m.get("start_time")
+            if st:
+                if st.tzinfo is None:
+                    st = st.replace(tzinfo=timezone.utc)
+                t_str = st.astimezone(tz).strftime("%H:%M WAT")
+            else:
+                t_str = "--:--"
             h_score = m["home_score"] if m["home_score"] is not None else ""
             a_score = m["away_score"] if m["away_score"] is not None else ""
             score_str = f"{h_score} - {a_score}" if h_score != "" else "vs"
@@ -135,8 +144,9 @@ async def main() -> None:
     # ── 1. Load configuration ────────────────────────────────────────
     settings = get_settings()
     logger.info(
-        "Configuration loaded (Featured Competitions: %d)",
+        "Configuration loaded (Featured Competitions: %d, Timezone: %s)",
         len(settings.featured_leagues) if isinstance(settings.featured_leagues, list) else 1,
+        settings.app_timezone,
     )
 
     # ── 2. Initialise database ───────────────────────────────────────
@@ -169,19 +179,20 @@ async def main() -> None:
     # Connect monitor to engine
     monitor.on_match(engine.process_match)
 
-    # ── 7. Daily Digest Scheduler (Option C: 08:00, 15:00, 22:00) ────
+    # ── 7. Daily Digest Scheduler (Option C: 08:00, 15:00, 22:00 WAT) ────
     async def run_digest_scheduler() -> None:
         """Background loop checking and triggering scheduled daily digests."""
         if not settings.daily_digest_enabled:
             return
 
         digest_hours = settings.daily_digest_hours if isinstance(settings.daily_digest_hours, list) else [8, 15, 22]
-        logger.info("Daily Digest Scheduler active — scheduled hours: %s", digest_hours)
+        tz = ZoneInfo(settings.app_timezone)
+        logger.info("Daily Digest Scheduler active — scheduled hours: %s (Timezone: %s)", digest_hours, settings.app_timezone)
         fired_today: set[str] = set()
 
         while True:
             try:
-                now = datetime.now()
+                now = datetime.now(tz)
                 today_key = now.strftime("%Y-%m-%d")
                 current_hour = now.hour
 
@@ -197,7 +208,7 @@ async def main() -> None:
                         else:
                             digest_title = "🌙 Night Match Recap & Results"
 
-                        logger.info("Triggering scheduled %s for hour %d:00...", digest_title, current_hour)
+                        logger.info("Triggering scheduled %s for hour %d:00 WAT...", digest_title, current_hour)
                         
                         # Refresh latest from SofaScore
                         today_str = now.strftime("%Y-%m-%d")

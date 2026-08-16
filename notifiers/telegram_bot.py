@@ -22,6 +22,7 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Optional
+from zoneinfo import ZoneInfo
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -36,6 +37,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Nigerian Timezone (West Africa Time, UTC+1)
+LAGOS_TZ = ZoneInfo("Africa/Lagos")
+
+
+def to_wat(dt: Optional[datetime]) -> Optional[datetime]:
+    """Convert a UTC datetime to West Africa Time (WAT / Nigerian Time, UTC+1)."""
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(LAGOS_TZ)
+
 
 def _escape(text: str) -> str:
     """Escape text for Telegram HTML parse mode."""
@@ -43,8 +56,9 @@ def _escape(text: str) -> str:
 
 
 def _format_match_row(match: FootballMatch) -> str:
-    """Format a single match fixture line for Telegram message text."""
-    t_str = match.start_time.strftime("%H:%M")
+    """Format a single match fixture line for Telegram message text in Nigerian Time (WAT)."""
+    wat_dt = to_wat(match.start_time)
+    t_str = wat_dt.strftime("%H:%M") if wat_dt else "--:--"
     
     if match.status_type == "inprogress":
         status_badge = f"🔴 <b>{match.home_score or 0}-{match.away_score or 0}</b> ({match.minute or 'LIVE'})"
@@ -53,7 +67,7 @@ def _format_match_row(match: FootballMatch) -> str:
     elif match.status_type in ("postponed", "canceled"):
         status_badge = f"⚠️ <i>{match.status_description}</i>"
     else:
-        status_badge = f"🕒 <i>{t_str} UTC</i>"
+        status_badge = f"🕒 <i>{t_str} WAT</i>"
 
     link = f'<a href="{match.sofascore_url}">{_escape(match.home_team)} vs {_escape(match.away_team)}</a>' if match.sofascore_url else f"{_escape(match.home_team)} vs {_escape(match.away_team)}"
     return f"• {link}\n   └ {status_badge}"
@@ -91,11 +105,13 @@ def format_matches_message(matches: list[FootballMatch], title: str = "📅 Toda
 
 
 def generate_matches_txt(matches: list[FootballMatch], date_str: str) -> io.BytesIO:
-    """Generate a clean formatted plain-text document of all matches for the day."""
+    """Generate a clean formatted plain-text document of all matches for the day in Nigerian Time."""
     output = io.StringIO()
+    now_wat = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d %I:%M:%S %p WAT")
     output.write("=" * 75 + "\n")
     output.write(f" SPORTCRAWL — TODAY'S FOOTBALL FIXTURES & RESULTS ({date_str})\n")
-    output.write(f" Total Matches: {len(matches)} | Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
+    output.write(f" Times shown in West Africa Time (WAT / Nigerian Time, UTC+1)\n")
+    output.write(f" Total Matches: {len(matches)} | Generated: {now_wat}\n")
     output.write("=" * 75 + "\n\n")
 
     grouped: dict[str, list[FootballMatch]] = defaultdict(list)
@@ -109,7 +125,8 @@ def generate_matches_txt(matches: list[FootballMatch], date_str: str) -> io.Byte
         output.write(f"=== {prefix}{league.upper()} ({len(league_matches)} matches) ===\n")
         
         for m in league_matches:
-            t_str = m.start_time.strftime("%H:%M UTC") if m.start_time else "--:--"
+            wat_dt = to_wat(m.start_time)
+            t_str = wat_dt.strftime("%H:%M WAT") if wat_dt else "--:--"
             h_score = m.home_score if m.home_score is not None else ""
             a_score = m.away_score if m.away_score is not None else ""
             score_str = f"{h_score} - {a_score}" if h_score != "" else "vs"
@@ -138,12 +155,14 @@ def generate_matches_txt(matches: list[FootballMatch], date_str: str) -> io.Byte
 
 
 def generate_matches_json(matches: list[FootballMatch], date_str: str) -> io.BytesIO:
-    """Generate a structured JSON document containing full match data."""
+    """Generate a structured JSON document containing full match data in WAT / UTC."""
+    now_wat = datetime.now(LAGOS_TZ).isoformat()
     data = {
         "source": "SportCrawl / SofaScore",
         "date": date_str,
+        "timezone": "Africa/Lagos (WAT / UTC+1)",
         "total_matches": len(matches),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": now_wat,
         "matches": [
             {
                 "match_id": m.match_id,
@@ -164,6 +183,7 @@ def generate_matches_json(matches: list[FootballMatch], date_str: str) -> io.Byt
                     "score": m.away_score,
                     "score_ht": m.away_score_ht,
                 },
+                "start_time_wat": to_wat(m.start_time).strftime("%Y-%m-%d %H:%M:%S WAT") if m.start_time else "",
                 "start_time_utc": m.start_time.isoformat() if m.start_time else "",
                 "status_type": m.status_type,
                 "status_description": m.status_description,

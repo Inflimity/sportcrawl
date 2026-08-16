@@ -233,8 +233,8 @@ class SofaScoreMonitor:
                             const catData = await catRes.json();
                             const categories = catData.categories || [];
                             
-                            // Fetch categories in parallel batches of 15
-                            const batchSize = 15;
+                            // Fetch categories in parallel batches of 40 for ultra-fast scraping
+                            const batchSize = 40;
                             for (let i = 0; i < categories.length; i += batchSize) {
                                 const batch = categories.slice(i, i + batchSize);
                                 const batchPromises = batch.map(async (cat) => {

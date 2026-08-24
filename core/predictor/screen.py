@@ -188,8 +188,14 @@ def screen_fixture(fixture: Fixture, home: TeamForm, away: TeamForm) -> list[Pic
 
     # --- Over 1.5 goals ------------------------------------------------------
     model_over15 = 1 - sum(_poisson_pmf(k, lam_total) for k in range(2))
-    emp_over15 = max(0.70, (home.over25_rate + away.over25_rate) / 2 + 0.15)
-    p_over15 = _blend(model_over15, min(0.95, emp_over15))
+    # Measured, not assumed. This previously read
+    #   max(0.70, (over25_rate_avg) + 0.15)
+    # which floored the empirical estimate at 70% however goal-shy the teams
+    # were, so a tight defensive matchup — Serie A being the archetype — came
+    # out at 62% and cleared the floor when the honest figure was 56% and
+    # should have been skipped. The floor only ever fired where it was wrong.
+    emp_over15 = (home.over15_rate + away.over15_rate) / 2
+    p_over15 = _blend(model_over15, emp_over15)
     if p_over15 >= PROBABILITY_FLOOR["Over 1.5"]:
         conv = _conviction(p_over15, model_over15, emp_over15, sample)
         if conv >= CONVICTION_FLOOR:

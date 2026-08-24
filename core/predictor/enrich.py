@@ -50,6 +50,7 @@ class TeamForm:
     ga_away: Optional[float] = None
 
     btts_rate: float = 0.0       # share of matches where both teams scored
+    over15_rate: float = 0.0     # share of matches with 2+ total goals
     over25_rate: float = 0.0     # share of matches with 3+ total goals
     scored_rate: float = 0.0     # share of matches where this team scored
     clean_sheet_rate: float = 0.0
@@ -131,7 +132,7 @@ def _build_form(
     if not usable:
         return form
 
-    gf = ga = btts = over25 = scored = clean = 0
+    gf = ga = btts = over15 = over25 = scored = clean = 0
     home_gf = home_ga = home_n = 0
     away_gf = away_ga = away_n = 0
     results: list[str] = []
@@ -148,6 +149,8 @@ def _build_form(
         ga += conceded_by_team
         if home_score > 0 and away_score > 0:
             btts += 1
+        if home_score + away_score > 1:
+            over15 += 1
         if home_score + away_score > 2:
             over25 += 1
         if scored_by_team > 0:
@@ -176,6 +179,7 @@ def _build_form(
     form.gf_avg = gf / n
     form.ga_avg = ga / n
     form.btts_rate = btts / n
+    form.over15_rate = over15 / n
     form.over25_rate = over25 / n
     form.scored_rate = scored / n
     form.clean_sheet_rate = clean / n

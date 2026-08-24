@@ -85,8 +85,21 @@ class TeamForm:
         return venue if venue is not None else self.ga_avg
 
 
-def _build_form(team_id: int, name: str, events: list[dict[str, Any]], limit: int) -> TeamForm:
-    """Compute a TeamForm from raw SofaScore event objects."""
+def _build_form(
+    team_id: int,
+    name: str,
+    events: list[dict[str, Any]],
+    limit: int,
+    before_ts: Optional[int] = None,
+) -> TeamForm:
+    """
+    Compute a TeamForm from raw SofaScore event objects.
+
+    ``before_ts`` discards matches kicking off at or after that unix timestamp.
+    Live use does not need it — nothing later than now exists yet — but any
+    backtest does: without it, form for a past fixture silently includes
+    results from after that fixture was played, which inflates accuracy.
+    """
     form = TeamForm(team_id=team_id, name=name)
 
     usable = [
@@ -96,6 +109,7 @@ def _build_form(team_id: int, name: str, events: list[dict[str, Any]], limit: in
         and is_form_eligible((ev.get("tournament") or {}).get("name", ""))
         and (ev.get("homeScore") or {}).get("current") is not None
         and (ev.get("awayScore") or {}).get("current") is not None
+        and (before_ts is None or (ev.get("startTimestamp") or 0) < before_ts)
     ]
     usable.sort(key=lambda ev: ev.get("startTimestamp") or 0, reverse=True)
     usable = usable[:limit]
@@ -169,6 +183,7 @@ async def fetch_team_forms(
     form_matches: int = 10,
     batch_size: int = 8,
     settings: Optional[Settings] = None,
+    before_ts: Optional[int] = None,
 ) -> dict[int, TeamForm]:
     """
     Fetch and compute recent form for every team appearing in ``fixtures``.
@@ -176,6 +191,10 @@ async def fetch_team_forms(
     Returns a mapping of team id -> TeamForm. Teams whose history could not be
     retrieved are present with ``matches_used == 0`` so callers can skip them
     rather than silently treating them as goalless.
+
+    ``before_ts`` restricts form to matches played before that unix timestamp;
+    pass the fixture date when backtesting so results from after the fixture
+    cannot leak into its own prediction.
     """
     names: dict[int, str] = {}
     for fx in fixtures:
@@ -240,6 +259,43 @@ async def fetch_team_forms(
                 logger.warning("Batch %d fetch error: %s", batch_no, batch_err)
 
             await asyncio.sleep(0.3)
+
+        # SofaScore starts dropping requests under sustained load, and a team
+        # with no history is silently excluded from screening — on 2026-08-24
+        # that quietly removed the entire Brasileirão card. Retry the misses
+        # once, smaller and slower, before giving up on them.
+        missing = [tid for tid in team_ids if tid not in raw_by_team]
+        if missing:
+            logger.info("Retrying %d teams that returned no history...", len(missing))
+            await asyncio.sleep(2.0)
+            for start in range(0, len(missing), 4):
+                chunk = missing[start : start + 4]
+                try:
+                    batch = await page.evaluate(
+                        """async ({ids, base}) => {
+                            const out = {};
+                            for (const id of ids) {
+                                try {
+                                    const r = await fetch(`${base}/team/${id}/events/last/0`,
+                                                          {signal: AbortSignal.timeout(12000)});
+                                    out[id] = r.ok ? ((await r.json()).events || []) : null;
+                                } catch (e) { out[id] = null; }
+                            }
+                            return out;
+                        }""",
+                        {"ids": chunk, "base": API_BASE},
+                    )
+                    for key, events in (batch or {}).items():
+                        if events:
+                            raw_by_team[int(key)] = events
+                except Exception as retry_err:
+                    logger.warning("Retry batch failed: %s", retry_err)
+                await asyncio.sleep(1.0)
+
+            still_missing = [tid for tid in team_ids if tid not in raw_by_team]
+            logger.info(
+                "Retry recovered %d of %d teams", len(missing) - len(still_missing), len(missing)
+            )
     finally:
         try:
             await browser.close()
@@ -253,7 +309,7 @@ async def fetch_team_forms(
             logger.warning("No form history retrieved for %s (id=%s)", name, team_id)
             forms[team_id] = TeamForm(team_id=team_id, name=name)
             continue
-        forms[team_id] = _build_form(team_id, name, events, form_matches)
+        forms[team_id] = _build_form(team_id, name, events, form_matches, before_ts=before_ts)
 
     reliable = sum(1 for f in forms.values() if f.is_reliable)
     logger.info("Built form for %d teams (%d with a usable sample)", len(forms), reliable)

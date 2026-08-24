@@ -21,7 +21,8 @@ import sys
 
 from core.predictor.enrich import fetch_team_forms
 from core.predictor.filter import filter_fixtures, load_fixture_file
-from core.predictor.format import format_picks, format_report
+from core.predictor.format import format_picks, format_priced, format_report
+from core.predictor.odds import attach_odds, filter_by_edge
 from core.predictor.screen import screen_fixtures
 
 
@@ -46,6 +47,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--form-matches", type=int, default=10, help="Recent matches per team (default: 10)")
     parser.add_argument("--picks-only", action="store_true", help="Print only booker-ready selection lines")
+    parser.add_argument(
+        "--odds",
+        action="store_true",
+        help="Fetch live SportyBet prices and show the edge against the model",
+    )
+    parser.add_argument(
+        "--min-edge",
+        type=float,
+        default=None,
+        help="With --odds, keep only picks whose edge over the implied price clears this (e.g. 0.05)",
+    )
     parser.add_argument("--show-dropped", action="store_true", help="Show a sample of filtered-out fixtures")
     parser.add_argument(
         "--allow-unlisted",
@@ -77,6 +89,19 @@ async def run(args: argparse.Namespace) -> int:
         limit=args.top,
         max_per_fixture=args.max_per_fixture,
     )
+
+    if args.odds or args.min_edge is not None:
+        priced = await attach_odds(picks)
+        if args.min_edge is not None:
+            priced = filter_by_edge(priced, min_edge=args.min_edge)
+            picks = [p.pick for p in priced]
+        if args.picks_only:
+            print(format_picks(picks))
+        else:
+            print(format_report(picks, stats, show_dropped=args.show_dropped))
+            print()
+            print(format_priced(priced))
+        return 0
 
     if args.picks_only:
         print(format_picks(picks))

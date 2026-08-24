@@ -7,8 +7,13 @@ and a human-readable report for reviewing picks before they are booked.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from core.predictor.filter import FilterStats
 from core.predictor.screen import Pick
+
+if TYPE_CHECKING:  # avoids a circular import at runtime
+    from core.predictor.odds import PricedPick
 
 
 def format_picks(picks: list[Pick]) -> str:
@@ -21,6 +26,51 @@ def format_picks(picks: list[Pick]) -> str:
         Espanyol vs Levante UD - GG
     """
     return "\n".join(pick.line for pick in picks)
+
+
+def format_priced(priced: list["PricedPick"]) -> str:
+    """
+    Render picks against their live market price.
+
+    ``EDGE`` is the model's probability minus the price's implied probability.
+    Negative means the market already rates the selection at least as likely as
+    the model does — the bet may still win, but it is not value.
+    """
+    lines = [
+        "-" * 78,
+        "VALUE vs SPORTYBET PRICE",
+        "-" * 78,
+        f"{'MATCH':<30} {'PICK':<10} {'RAW':>5} {'CAL':>5} {'ODDS':>6} {'IMPL':>5} {'EDGE':>7}",
+    ]
+
+    for item in priced:
+        match = item.pick.fixture.label
+        if len(match) > 29:
+            match = match[:26] + "..."
+        if item.odds is None:
+            lines.append(
+                f"{match:<30} {item.pick.selection:<10} {item.pick.probability:>4.0%} "
+                f"{item.calibrated_probability:>4.0%} {'—':>6} {'—':>5}   {item.error or 'no price'}"
+            )
+            continue
+        implied = item.implied_probability or 0.0
+        edge = item.edge or 0.0
+        flag = "+" if edge > 0 else ""
+        lines.append(
+            f"{match:<30} {item.pick.selection:<10} {item.pick.probability:>4.0%} "
+            f"{item.calibrated_probability:>4.0%} {item.odds:>6.2f} {implied:>4.0%} {flag}{edge:>6.1%}"
+        )
+
+    with_edge = [p for p in priced if (p.edge or 0) > 0]
+    raw_edge = [p for p in priced if (p.raw_edge or 0) > 0]
+    lines.append("-" * 78)
+    lines.append(
+        f"{len(with_edge)}/{len(priced)} picks show a positive edge after calibration "
+        f"({len(raw_edge)} before it)."
+    )
+    lines.append("RAW = model probability. CAL = corrected for measured overconfidence.")
+    lines.append("EDGE uses CAL — it is what the bet is actually worth, not what the model claims.")
+    return "\n".join(lines)
 
 
 def format_report(picks: list[Pick], stats: FilterStats, show_dropped: bool = False) -> str:

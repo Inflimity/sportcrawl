@@ -5,21 +5,21 @@ Scores each fixture with an independent-Poisson goals model built from recent
 form, blends it against the teams' observed hit rates, and emits only the
 selections that clear a conviction threshold.
 
-Market safety
--------------
-The SportyBet booker resolves markets by clicking a column index within a
-market tab. Two paths there are not yet trustworthy, so this module will not
-generate them:
+Markets generated
+-----------------
+``GG``, ``Over 2.5``, ``1X`` and ``X2``.
 
-* **Any Under selection** — ``sportybet_service._execute_market_click`` falls
-  back to the Over column when a row exposes exactly four outcomes.
-* **Over/Under at any line other than 2.5** — the line dropdown is best-effort
-  and failure is silent, so a 3.5 request can be booked at whatever line the
-  row happens to be showing.
+``NG`` is deliberately not generated. Backtested against the 2026-08-16 card it
+went 2/6 while being rated 64-85%, and the losses were systematic rather than
+unlucky (3-1, 4-1, 5-4). The independent-Poisson model is weakest exactly where
+``NG`` gets selected: a heavy mismatch drives the both-teams-score probability
+down, but strong favourites score freely and the underdog still tends to get
+one. Set ``ENABLE_NG`` to re-enable once the goals model handles mismatches
+better — a higher floor alone will not fix it, since the 85% pick lost too.
 
-"Low scoring" is therefore expressed as BTTS ``NG``, whose tab mapping is
-explicit and correct. Revisit ``UNSAFE_MARKETS`` once the booker verifies its
-selections against the betslip.
+Under and non-2.5 Over/Under lines are safe to book now that the booker
+resolves markets through SportyBet's API rather than by clicking column
+indices, but they are not generated yet because nothing has graded them.
 """
 
 from __future__ import annotations
@@ -41,10 +41,29 @@ MODEL_WEIGHT = 0.6
 LAMBDA_MIN, LAMBDA_MAX = 0.2, 4.0
 
 # A selection must clear both its probability floor and the conviction floor.
-PROBABILITY_FLOOR = {"GG": 0.62, "NG": 0.62, "Over 2.5": 0.62, "1X": 0.78, "X2": 0.78}
-CONVICTION_FLOOR = 0.55
+#
+# Floors were set from a 142-pick backtest over 8 matchdays (see
+# scratchpad/multiday.py). Accuracy by predicted band:
+#
+#   80%+     61/73  = 84%   calibrated
+#   75-80%   31/39  = 79%   calibrated
+#   70-75%   19/30  = 63%   overconfident — excluded by the 0.75 floor
+#
+# A uniform 0.75 floor was tried and reverted: GG and Over 2.5 rarely exceed
+# 75%, so it starved exactly the markets carrying value and left an output of
+# nothing but 1X. Accuracy and value point in opposite directions here —
+#
+#   1X        85% hit, priced ~1.22 (implied 82%)  ->  break-even
+#   Over 2.5  72% hit, priced ~1.70 (implied 59%)  ->  clear edge
+#
+# — so the goals markets keep the lower floor and quality control comes from
+# --min-edge against the live price, which is what actually decides profit.
+# 1X/X2 sit higher because a double chance below ~0.78 is never worth its price.
+PROBABILITY_FLOOR = {"GG": 0.70, "NG": 0.75, "Over 2.5": 0.70, "1X": 0.80, "X2": 0.80}
+CONVICTION_FLOOR = 0.62
 
-UNSAFE_MARKETS = ("Under", "Over 1.5", "Over 3.5", "Over 4.5")
+# See the module docstring — NG is miscalibrated, not merely unlucky.
+ENABLE_NG = False
 
 
 @dataclass
@@ -130,10 +149,11 @@ def screen_fixture(fixture: Fixture, home: TeamForm, away: TeamForm) -> list[Pic
     emp_btts = (home.btts_rate + away.btts_rate) / 2
     p_btts = _blend(model_btts, emp_btts)
 
-    for selection, prob, model_p, emp_p in (
-        ("GG", p_btts, model_btts, emp_btts),
-        ("NG", 1 - p_btts, 1 - model_btts, 1 - emp_btts),
-    ):
+    btts_candidates = [("GG", p_btts, model_btts, emp_btts)]
+    if ENABLE_NG:
+        btts_candidates.append(("NG", 1 - p_btts, 1 - model_btts, 1 - emp_btts))
+
+    for selection, prob, model_p, emp_p in btts_candidates:
         if prob >= PROBABILITY_FLOOR[selection]:
             conv = _conviction(prob, model_p, emp_p, sample)
             if conv >= CONVICTION_FLOOR:
@@ -237,10 +257,6 @@ def screen_fixtures(
         candidates = screen_fixture(fixture, home, away)
         candidates.sort(key=lambda p: p.conviction, reverse=True)
         picks.extend(candidates[:max_per_fixture] if max_per_fixture else candidates)
-
-    for pick in picks:
-        if any(flag in pick.selection for flag in UNSAFE_MARKETS):
-            raise AssertionError(f"Generated an unsafe selection: {pick.selection}")
 
     picks.sort(key=lambda p: p.conviction, reverse=True)
     logger.info("Screened %d fixtures into %d qualifying picks", len(fixtures), len(picks))

@@ -95,16 +95,35 @@ class SportyBetBookerService:
             "operatortoken": "",
         }
 
-    async def fetch_available_events(self) -> list[dict[str, Any]]:
-        """Fetch all upcoming and live football events from SportyBet API."""
+    async def fetch_available_events(self, max_pages: int = 12) -> list[dict[str, Any]]:
+        """
+        Fetch the upcoming football card from SportyBet.
+
+        Uses ``factsCenter/pcUpcomingEvents``, which is paginated and returns the
+        full prematch list (~1000 events). The older ``liveOrPrematchEvents``
+        endpoint returns only what is currently in-play — typically under a
+        dozen events, mostly Simulated Reality virtuals — so fixtures kicking
+        off later today were never found and could not be booked.
+        """
         ts = int(time.time() * 1000)
         events: list[dict[str, Any]] = []
         try:
-            async with httpx.AsyncClient(headers=self.http_headers, timeout=12.0) as client:
-                url = f"{self.api_base}/factsCenter/liveOrPrematchEvents?sportId=sr%3Asport%3A1&_t={ts}"
-                r = await client.get(url)
-                if r.status_code == 200:
-                    tournaments = r.json().get("data", [])
+            async with httpx.AsyncClient(headers=self.http_headers, timeout=15.0) as client:
+                for page in range(1, max_pages + 1):
+                    url = (
+                        f"{self.api_base}/factsCenter/pcUpcomingEvents"
+                        f"?sportId=sr%3Asport%3A1&marketId=1%2C18%2C10%2C29"
+                        f"&pageSize=100&pageNum={page}&_t={ts}"
+                    )
+                    r = await client.get(url)
+                    if r.status_code != 200:
+                        break
+
+                    tournaments = (r.json().get("data") or {}).get("tournaments") or []
+                    if not tournaments:
+                        break
+
+                    page_events = 0
                     for t in tournaments:
                         t_name = (t.get("name") or "").lower()
                         cat_name = (t.get("categoryName") or "").lower()
@@ -117,8 +136,14 @@ class SportyBetBookerService:
                             if any(x in h_name or x in a_name for x in ("srl", "simulated reality")):
                                 continue
                             events.append(ev)
+                            page_events += 1
+
+                    if page_events == 0 and page > 1:
+                        break
         except Exception as e:
             logger.warning("Failed to fetch SportyBet events via API: %s", e)
+
+        logger.info("Retrieved %d bookable SportyBet events", len(events))
         return events
 
     async def fetch_event_markets(self, event_id: str) -> list[dict[str, Any]]:

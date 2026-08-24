@@ -31,7 +31,7 @@ logger = logging.getLogger("SportCrawl.Predictor.Enrich")
 API_BASE = "https://www.sofascore.com/api/v1"
 
 # Below this many usable matches a team's rates are too noisy to bet on.
-MIN_MATCHES_FOR_CONFIDENCE = 5
+MIN_MATCHES_FOR_CONFIDENCE = 2
 
 
 @dataclass

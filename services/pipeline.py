@@ -222,8 +222,8 @@ class PredictionBookingPipeline:
         # Fetch form once for all matches
         forms = await fetch_team_forms(fixtures, form_matches=form_matches)
 
-        # Screen up to 35 picks
-        all_screened = screen_fixtures(fixtures=fixtures, forms=forms, limit=35, max_per_fixture=1)
+        # Screen up to 50 picks so Top 20 always has a full 20-match card
+        all_screened = screen_fixtures(fixtures=fixtures, forms=forms, limit=50, max_per_fixture=1)
         if not all_screened:
             empty = PipelineResult(picks=[], filter_stats=stats, picks_text="")
             return DualPipelineResult(tier_10=empty, tier_20=empty, filter_stats=stats)

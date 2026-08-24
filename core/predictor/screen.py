@@ -61,16 +61,16 @@ LAMBDA_MIN, LAMBDA_MAX = 0.2, 4.0
 # 1X/X2 sit higher because a double chance below ~0.78 is never worth its price.
 # A selection must clear both its probability floor and the conviction floor.
 PROBABILITY_FLOOR = {
-    "1X": 0.65,
-    "X2": 0.65,
-    "Over 1.5": 0.65,
-    "Over 2.5": 0.55,
-    "GG": 0.55,
-    "NG": 0.65,
-    "1": 0.55,
-    "2": 0.55,
+    "1X": 0.58,
+    "X2": 0.58,
+    "Over 1.5": 0.58,
+    "Over 2.5": 0.50,
+    "GG": 0.50,
+    "NG": 0.58,
+    "1": 0.50,
+    "2": 0.50,
 }
-CONVICTION_FLOOR = 0.45
+CONVICTION_FLOOR = 0.35
 
 # See the module docstring — NG is miscalibrated, not merely unlucky.
 ENABLE_NG = False

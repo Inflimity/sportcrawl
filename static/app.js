@@ -13,6 +13,7 @@ class FootballApp {
 
         this.initElements();
         this.bindEvents();
+        this.initBooker();
         this.initWebSocket();
         this.loadMatches();
         this.loadStatus();
@@ -97,6 +98,138 @@ class FootballApp {
                 dropdownExport.classList.remove('open');
             });
         }
+    }
+
+    initBooker() {
+        const btnOpen = document.getElementById('btn-open-booker');
+        const btnClose = document.getElementById('btn-close-booker');
+        const btnCancel = document.getElementById('btn-cancel-booker');
+        const modal = document.getElementById('booker-modal');
+        const inputArea = document.getElementById('booker-input-text');
+        const previewBox = document.getElementById('booker-preview-box');
+        const previewList = document.getElementById('preview-list');
+        const previewCount = document.getElementById('preview-count');
+        const resultCard = document.getElementById('booker-result-card');
+        const errorBox = document.getElementById('booker-error-box');
+        const btnGenerate = document.getElementById('btn-generate-code');
+        const btnSpinner = document.getElementById('generate-btn-spinner');
+        const btnText = document.getElementById('generate-btn-text');
+        const resultCodeVal = document.getElementById('result-code-val');
+        const resultOdds = document.getElementById('result-odds-badge');
+        const resultShareLink = document.getElementById('result-share-link');
+        const btnCopy = document.getElementById('btn-copy-code');
+
+        if (!btnOpen || !modal) return;
+
+        const openModal = () => {
+            modal.style.display = 'flex';
+            inputArea.focus();
+        };
+
+        const closeModal = () => {
+            modal.style.display = 'none';
+        };
+
+        btnOpen.addEventListener('click', openModal);
+        btnClose.addEventListener('click', closeModal);
+        btnCancel.addEventListener('click', closeModal);
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) closeModal();
+        });
+
+        // Live preview on input (debounced)
+        let parseTimer = null;
+        inputArea.addEventListener('input', () => {
+            clearTimeout(parseTimer);
+            const text = inputArea.value.trim();
+            if (!text) {
+                previewBox.style.display = 'none';
+                return;
+            }
+
+            parseTimer = setTimeout(async () => {
+                try {
+                    const res = await fetch('/api/booker/parse', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ text }),
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data.count > 0) {
+                            previewCount.textContent = data.count;
+                            previewList.innerHTML = data.predictions.map(p => `
+                                <div class="preview-item">
+                                    <span class="preview-teams">⚽ ${this.escapeHtml(p.home_team)} vs ${this.escapeHtml(p.away_team)}</span>
+                                    <span class="preview-selection">${this.escapeHtml(p.selection)} (${this.escapeHtml(p.market_category)})</span>
+                                </div>
+                            `).join('');
+                            previewBox.style.display = 'block';
+                        } else {
+                            previewBox.style.display = 'none';
+                        }
+                    }
+                } catch (e) {
+                    console.debug('Parse preview error', e);
+                }
+            }, 350);
+        });
+
+        // Generate Booking Code
+        btnGenerate.addEventListener('click', async () => {
+            const text = inputArea.value.trim();
+            if (!text) {
+                this.showToast('Please paste betting predictions first', 'error');
+                return;
+            }
+
+            btnGenerate.disabled = true;
+            btnSpinner.style.display = 'inline-block';
+            btnText.textContent = 'Booking on SportyBet...';
+            errorBox.style.display = 'none';
+            resultCard.style.display = 'none';
+
+            try {
+                const res = await fetch('/api/booker/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text, country: 'ng' }),
+                });
+                const data = await res.json();
+
+                if (data.success && data.booking_code) {
+                    resultCodeVal.textContent = data.booking_code;
+                    resultOdds.innerHTML = `Total Odds: <strong>${data.total_odds || '—'}</strong> (${data.selections_count} games)`;
+                    if (data.share_url) {
+                        resultShareLink.href = data.share_url;
+                        resultShareLink.style.display = 'inline-block';
+                    } else {
+                        resultShareLink.style.display = 'none';
+                    }
+                    resultCard.style.display = 'flex';
+                    this.showToast(`🎉 Booking Code: ${data.booking_code}`, 'success');
+                } else {
+                    errorBox.textContent = data.error_message || 'Could not generate booking code. Check game fixtures.';
+                    errorBox.style.display = 'block';
+                }
+            } catch (err) {
+                errorBox.textContent = `Request failed: ${err.message}`;
+                errorBox.style.display = 'block';
+            } finally {
+                btnGenerate.disabled = false;
+                btnSpinner.style.display = 'none';
+                btnText.textContent = 'Generate Booking Code';
+            }
+        });
+
+        // Copy Code Button
+        btnCopy.addEventListener('click', () => {
+            const code = resultCodeVal.textContent.trim();
+            if (code && code !== '------') {
+                navigator.clipboard.writeText(code);
+                this.showToast(`📋 Copied booking code: ${code}`);
+            }
+        });
     }
 
     async loadMatches() {

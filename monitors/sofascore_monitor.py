@@ -84,7 +84,6 @@ class SofaScoreMonitor:
                 "--disable-background-networking",
                 "--disable-default-apps",
                 "--disable-sync",
-                "--js-flags=--max-old-space-size=128",
                 "--disable-blink-features=AutomationControlled",
             ],
         )

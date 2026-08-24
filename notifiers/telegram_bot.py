@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
 if TYPE_CHECKING:
@@ -247,9 +247,14 @@ class TelegramNotifier:
             self._app.add_handler(CommandHandler(["top", "featured"], self._cmd_top))
             self._app.add_handler(CommandHandler(["export", "file", "download", "json", "txt"], self._cmd_export))
             self._app.add_handler(CommandHandler(["refresh"], self._cmd_refresh))
+            self._app.add_handler(CommandHandler(["book", "booker", "slip", "sportybet"], self._cmd_book))
+            self._app.add_handler(CommandHandler(["predict", "picks", "bankers", "ai"], self._cmd_predict))
 
             # Callbacks
             self._app.add_handler(CallbackQueryHandler(self._handle_callback))
+
+            # Message text handler for pasted predictions
+            self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text_message))
 
             await self._app.initialize()
             await self._app.start()
@@ -264,8 +269,10 @@ class TelegramNotifier:
             return
         text = (
             "🤖 <b>Welcome to SportCrawl Football Bot!</b>\n\n"
-            "Track today's football fixtures, upcoming matches, live scores, and major leagues in Nigerian Time (WAT).\n\n"
+            "Track today's fixtures, live scores, and automatically generate <b>Statistical Predictions & SportyBet Booking Codes</b>!\n\n"
             "<b>Available Commands:</b>\n"
+            "🎯 /predict — Run statistical screening on today's fixtures & auto-book on SportyBet\n"
+            "🎟️ /book — Auto-book copied predictions & get SportyBet booking code\n"
             "📅 /today — View all scheduled games for today\n"
             "🕒 /upcoming — View upcoming matches that have NOT started yet\n"
             "🔴 /live — View currently live in-play games\n"
@@ -276,17 +283,17 @@ class TelegramNotifier:
         )
         keyboard = InlineKeyboardMarkup([
             [
+                InlineKeyboardButton("🎯 Today's AI Picks & Code", callback_data="btn_predict"),
                 InlineKeyboardButton("📅 Today's Games", callback_data="btn_today"),
+            ],
+            [
                 InlineKeyboardButton("🕒 Upcoming Games", callback_data="btn_upcoming"),
-            ],
-            [
                 InlineKeyboardButton("🔴 Live Scores", callback_data="btn_live"),
-                InlineKeyboardButton("⭐ Top Leagues", callback_data="btn_top"),
             ],
             [
+                InlineKeyboardButton("⭐ Top Leagues", callback_data="btn_top"),
                 InlineKeyboardButton("📄 Download TXT", callback_data="btn_export_txt"),
-                InlineKeyboardButton("📊 Download JSON", callback_data="btn_export_json"),
-            ]
+            ],
         ])
         await update.effective_message.reply_text(
             text, parse_mode=ParseMode.HTML, reply_markup=keyboard
@@ -532,6 +539,163 @@ class TelegramNotifier:
             reply_markup=keyboard,
         )
 
+    async def _cmd_book(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handler for /book command to auto-generate SportyBet booking code."""
+        if not update.effective_message:
+            return
+
+        text = update.effective_message.text or ""
+        # Strip command prefix
+        lines = text.split("\n")
+        first_line = lines[0]
+        match_cmd = re.match(r"^/([a-zA-Z0-9_]+)\s*(.*)$", first_line)
+        if match_cmd:
+            rest_of_first_line = match_cmd.group(2).strip()
+            remaining_lines = "\n".join([rest_of_first_line] + lines[1:]).strip()
+            raw_input = remaining_lines
+        else:
+            raw_input = text.strip()
+
+        if not raw_input:
+            help_msg = (
+                "🎟️ <b>SportyBet Auto-Booker</b>\n\n"
+                "Paste your betting predictions below or use <code>/book [games]</code>.\n\n"
+                "<b>Supported Format Examples:</b>\n"
+                "• <code>Arsenal vs Chelsea - Over 2.5</code>\n"
+                "• <code>Real Madrid vs Barcelona : 1</code>\n"
+                "• <code>Inter Milan vs Juventus -> GG</code>\n"
+                "• <code>Man City vs Liverpool | 1X</code>\n"
+                "• <code>Aston Villa vs Wolves: DNB 1</code>\n\n"
+                "<i>Just paste any multi-line tips and I will visit SportyBet, build the slip, and return the booking code for you!</i>"
+            )
+            await update.effective_message.reply_text(help_msg, parse_mode=ParseMode.HTML)
+            return
+
+        await self._process_booking_request(update, raw_input)
+
+    async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Auto-detect pasted prediction blocks in regular chat messages."""
+        if not update.effective_message or not update.effective_message.text:
+            return
+
+        msg_text = update.effective_message.text.strip()
+        if len(msg_text) < 6:
+            return
+
+        # Check if text looks like a prediction list
+        from core.prediction_parser import parse_prediction_text
+        parsed = parse_prediction_text(msg_text)
+        if parsed and len(parsed) >= 1:
+            await self._process_booking_request(update, msg_text)
+
+    async def _process_booking_request(self, update: Update, text: str) -> None:
+        """Execute booking flow and send formatted result."""
+        from core.booker_engine import BookerEngine
+        from core.prediction_parser import parse_prediction_text
+
+        parsed_bets = parse_prediction_text(text)
+        if not parsed_bets:
+            await update.effective_message.reply_text(
+                "⚠️ <b>Could not recognize any matches or markets</b>\n\n"
+                "Please make sure your text contains team names separated by <code>vs</code> or <code>-</code> and the market (e.g. <code>Arsenal vs Chelsea - Over 2.5</code>).",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        preview_msg = f"⏳ <i>Recognized {len(parsed_bets)} games. Visiting SportyBet to generate booking code...</i>"
+        status_msg = await update.effective_message.reply_text(preview_msg, parse_mode=ParseMode.HTML)
+
+        try:
+            engine = BookerEngine(country_code="ng", headless=True)
+            result = await engine.book_predictions(text)
+            response_text = BookerEngine.format_telegram_response(result, parsed_bets)
+
+            keyboard = None
+            if result.success and result.share_url:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔗 Open Betslip on SportyBet", url=result.share_url)]
+                ])
+
+            await status_msg.edit_text(
+                response_text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_markup=keyboard,
+            )
+        except Exception as e:
+            logger.error("Error processing telegram booking request: %s", e, exc_info=True)
+            await status_msg.edit_text(
+                f"❌ <b>Error:</b> <i>{html_lib.escape(str(e))}</i>",
+                parse_mode=ParseMode.HTML,
+            )
+
+    async def _cmd_predict(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handler for /predict command — runs statistical screening and auto-books on SportyBet."""
+        if not update.effective_message:
+            return
+
+        status_msg = await update.effective_message.reply_text(
+            "🧠 <i>Analyzing today's fixtures & team forms with Poisson statistical model...</i>",
+            parse_mode=ParseMode.HTML,
+        )
+
+        try:
+            today_str = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d")
+            raw_matches = []
+
+            # 1. Fetch from DB or live monitor
+            if self._db:
+                db_matches = await self._db.get_matches_for_date(today_str)
+                if db_matches:
+                    from services.pipeline import convert_matches_to_raw_dicts
+                    raw_matches = convert_matches_to_raw_dicts(db_matches)
+
+            if not raw_matches and self._monitor:
+                raw_matches = await self._monitor.fetch_today_matches(today_str)
+                if self._db and raw_matches:
+                    for m in raw_matches:
+                        await self._db.upsert_match(m, is_featured=m.get("is_featured", False))
+
+            if not raw_matches:
+                await status_msg.edit_text(
+                    f"⚠️ No matches found for today ({today_str}). Try running /refresh first.",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+
+            await status_msg.edit_text(
+                f"🧠 <i>Screening {len(raw_matches)} fixtures & auto-booking top selections on SportyBet...</i>",
+                parse_mode=ParseMode.HTML,
+            )
+
+            # 2. Run prediction and auto-booking pipeline
+            from services.pipeline import PredictionBookingPipeline
+            pipeline = PredictionBookingPipeline(country_code="ng", headless=True)
+            result = await pipeline.run_pipeline(raw_matches, top_n=5, auto_book=True)
+
+            text_response = PredictionBookingPipeline.format_telegram_digest(
+                result, f"🎯 Today's AI Banker Predictions ({today_str})"
+            )
+
+            keyboard = None
+            if result.booking_result and result.booking_result.success and result.booking_result.share_url:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔗 Open Betslip on SportyBet", url=result.booking_result.share_url)]
+                ])
+
+            await status_msg.edit_text(
+                text_response,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_markup=keyboard,
+            )
+        except Exception as e:
+            logger.error("Error executing /predict command: %s", e, exc_info=True)
+            await status_msg.edit_text(
+                f"❌ <b>Prediction failed:</b> <i>{html_lib.escape(str(e))}</i>",
+                parse_mode=ParseMode.HTML,
+            )
+
     async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle inline button clicks."""
         query = update.callback_query
@@ -542,7 +706,9 @@ class TelegramNotifier:
         data = query.data
         today_str = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d")
 
-        if data == "btn_today":
+        if data == "btn_predict":
+            await self._cmd_predict(update, context)
+        elif data == "btn_today":
             await self._cmd_today(update, context)
         elif data == "btn_upcoming":
             await self._cmd_upcoming(update, context)
@@ -659,6 +825,25 @@ class TelegramNotifier:
             except Exception as e:
                 logger.error("Failed to send JSON matches document: %s", e)
 
+    async def send_custom_message(
+        self,
+        text: str,
+        parse_mode: str = "HTML",
+        reply_markup: Any = None,
+    ) -> None:
+        """Send custom formatted message to the admin chat."""
+        try:
+            p_mode = ParseMode.HTML if parse_mode.upper() == "HTML" else None
+            await self._bot.send_message(
+                chat_id=self._admin_chat_id,
+                text=text,
+                parse_mode=p_mode,
+                disable_web_page_preview=True,
+                reply_markup=reply_markup,
+            )
+        except Exception as e:
+            logger.warning("Failed to send custom message to Telegram: %s", e)
+
     async def send_match_alert(self, alert: MatchAlert) -> None:
         """Send a real-time event alert (Goal, Kickoff, Fulltime) to the admin chat."""
         try:
@@ -749,7 +934,35 @@ class TelegramNotifier:
         except Exception as e:
             logger.warning("Failed to send scheduled digest summary card: %s", e)
 
-        # 2. Attach full TXT / JSON document attachments directly
+        # 2. Automatically generate and send AI Banker Picks & SportyBet Booking Code
+        try:
+            from services.pipeline import PredictionBookingPipeline, convert_matches_to_raw_dicts
+            raw_matches = convert_matches_to_raw_dicts(all_matches)
+            pipeline = PredictionBookingPipeline(country_code="ng", headless=True)
+            pipe_res = await pipeline.run_pipeline(raw_matches, top_n=5, auto_book=True)
+
+            if pipe_res.picks:
+                predict_msg = PredictionBookingPipeline.format_telegram_digest(
+                    pipe_res, f"🎯 Today's AI Banker Selections ({today_str})"
+                )
+                pred_kb = None
+                if pipe_res.booking_result and pipe_res.booking_result.success and pipe_res.booking_result.share_url:
+                    pred_kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔗 Open Betslip on SportyBet", url=pipe_res.booking_result.share_url)]
+                    ])
+
+                await self._bot.send_message(
+                    chat_id=self._admin_chat_id,
+                    text=predict_msg,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                    reply_markup=pred_kb,
+                )
+                logger.info("Sent scheduled AI picks & booking code to Telegram")
+        except Exception as e:
+            logger.warning("Failed to generate scheduled AI predictions in digest: %s", e)
+
+        # 3. Attach full TXT / JSON document attachments directly
         if send_files:
             await self.send_matches_document(
                 chat_id=self._admin_chat_id,

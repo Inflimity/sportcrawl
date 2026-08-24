@@ -258,3 +258,80 @@ async def get_status():
         active_monitor="SofaScoreMonitor (Playwright)",
         featured_leagues_count=featured_count,
     )
+
+
+# ── Prediction Parser & SportyBet Booker Endpoints ───────────────────
+
+
+class BookerParseRequest(BaseModel):
+    text: str
+
+
+class BookerGenerateRequest(BaseModel):
+    text: str
+    country: str = "ng"
+
+
+@router.post("/booker/parse")
+async def parse_prediction_endpoint(req: BookerParseRequest):
+    """Parse raw prediction text and return detected betting fixtures and markets."""
+    from core.prediction_parser import parse_prediction_text
+
+    raw_text = req.text.strip()
+    if not raw_text:
+        raise HTTPException(400, "Prediction text cannot be empty")
+
+    parsed = parse_prediction_text(raw_text)
+    return {
+        "count": len(parsed),
+        "predictions": [p.to_dict() for p in parsed],
+    }
+
+
+@router.post("/booker/generate")
+async def generate_booking_code_endpoint(req: BookerGenerateRequest):
+    """Parse prediction text and generate a SportyBet booking code via automated betslip creation."""
+    from core.booker_engine import BookerEngine
+
+    raw_text = req.text.strip()
+    if not raw_text:
+        raise HTTPException(400, "Prediction text cannot be empty")
+
+    engine = BookerEngine(country_code=req.country, headless=True)
+    result = await engine.book_predictions(raw_text)
+    return result.to_dict()
+
+
+class PredictorRunRequest(BaseModel):
+    top_n: int = 5
+    auto_book: bool = True
+    country: str = "ng"
+
+
+@router.post("/predictor/run")
+async def run_predictor_pipeline_endpoint(req: PredictorRunRequest):
+    """Run statistical screening on today's fixtures and auto-book on SportyBet."""
+    if _db is None:
+        raise HTTPException(503, "Database not initialized")
+
+    from notifiers.telegram_bot import LAGOS_TZ
+    from services.pipeline import PredictionBookingPipeline, convert_matches_to_raw_dicts
+
+    today_str = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d")
+    matches = await _db.get_matches_for_date(today_str)
+
+    if not matches and _monitor:
+        raw_scraped = await _monitor.fetch_today_matches(today_str)
+        for m in raw_scraped:
+            await _db.upsert_match(m, is_featured=m.get("is_featured", False))
+        matches = await _db.get_matches_for_date(today_str)
+
+    if not matches:
+        raise HTTPException(404, f"No fixtures available for today ({today_str}) to screen.")
+
+    raw_matches = convert_matches_to_raw_dicts(matches)
+    pipeline = PredictionBookingPipeline(country_code=req.country, headless=True)
+    result = await pipeline.run_pipeline(raw_matches, top_n=req.top_n, auto_book=req.auto_book)
+    return result.to_dict()
+
+

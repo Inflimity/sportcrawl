@@ -30,6 +30,11 @@
                         <span id="display-date">Today</span>
                     </div>
                     
+                    <!-- Auto-Booker Trigger -->
+                    <button class="btn-booker" id="btn-open-booker" title="Auto-book predictions to SportyBet">
+                        <span>🎟️ Auto-Booker</span>
+                    </button>
+
                     <!-- Download Options Dropdown -->
                     <div class="dropdown-export" id="dropdown-export">
                         <button class="btn-export" id="btn-export-dropdown" title="Download matches">
@@ -61,6 +66,70 @@
                 </div>
             </div>
         </header>
+
+        <!-- ── SportyBet Booker Modal ────────────────────────── -->
+        <div class="modal-overlay" id="booker-modal" style="display: none;">
+            <div class="modal-card">
+                <div class="modal-header">
+                    <div class="modal-title-box">
+                        <span class="modal-icon">🎟️</span>
+                        <div>
+                            <h2 class="modal-title">SportyBet Auto-Booker</h2>
+                            <p class="modal-subtitle">Paste raw prediction text, match fixtures, and generate SportyBet booking code automatically</p>
+                        </div>
+                    </div>
+                    <button class="btn-close-modal" id="btn-close-booker">✕</button>
+                </div>
+
+                <div class="modal-body">
+                    <div class="input-group">
+                        <label for="booker-input-text" class="input-label">Paste Predictions Text</label>
+                        <textarea id="booker-input-text" class="booker-textarea" placeholder="Example format:
+Arsenal vs Chelsea - Over 2.5
+Real Madrid vs Barcelona : 1
+Inter Milan vs Juventus -> GG
+Man City vs Liverpool | 1X"></textarea>
+                    </div>
+
+                    <!-- Parsed preview box -->
+                    <div class="booker-preview-box" id="booker-preview-box" style="display: none;">
+                        <div class="preview-header">
+                            <span>Detected Fixtures (<strong id="preview-count">0</strong>)</span>
+                        </div>
+                        <div class="preview-list" id="preview-list"></div>
+                    </div>
+
+                    <!-- Booking Result Card -->
+                    <div class="booker-result-card" id="booker-result-card" style="display: none;">
+                        <div class="result-header">
+                            <span class="result-success-badge">✅ Booking Successful</span>
+                            <span class="result-odds" id="result-odds-badge">Odds: <strong>—</strong></span>
+                        </div>
+                        <div class="result-code-box">
+                            <span class="code-label">Booking Code</span>
+                            <div class="code-display">
+                                <span class="code-val" id="result-code-val">------</span>
+                                <button class="btn-copy-code" id="btn-copy-code" title="Copy code">📋 Copy</button>
+                            </div>
+                        </div>
+                        <div class="result-actions">
+                            <a href="#" target="_blank" id="result-share-link" class="btn-open-sportybet">Open on SportyBet ↗</a>
+                        </div>
+                    </div>
+
+                    <!-- Error Alert -->
+                    <div class="booker-error-box" id="booker-error-box" style="display: none;"></div>
+                </div>
+
+                <div class="modal-footer">
+                    <button class="btn-secondary" id="btn-cancel-booker">Cancel</button>
+                    <button class="btn-primary" id="btn-generate-code">
+                        <span id="generate-btn-spinner" class="spinner-sm" style="display: none;"></span>
+                        <span id="generate-btn-text">Generate Booking Code</span>
+                    </button>
+                </div>
+            </div>
+        </div>
 
         <!-- ── Main Viewport ─────────────────────────────────── -->
         <main class="main-container">

@@ -1,0 +1,247 @@
+"""
+Market screening for SportCrawl's prediction engine.
+
+Scores each fixture with an independent-Poisson goals model built from recent
+form, blends it against the teams' observed hit rates, and emits only the
+selections that clear a conviction threshold.
+
+Market safety
+-------------
+The SportyBet booker resolves markets by clicking a column index within a
+market tab. Two paths there are not yet trustworthy, so this module will not
+generate them:
+
+* **Any Under selection** — ``sportybet_service._execute_market_click`` falls
+  back to the Over column when a row exposes exactly four outcomes.
+* **Over/Under at any line other than 2.5** — the line dropdown is best-effort
+  and failure is silent, so a 3.5 request can be booked at whatever line the
+  row happens to be showing.
+
+"Low scoring" is therefore expressed as BTTS ``NG``, whose tab mapping is
+explicit and correct. Revisit ``UNSAFE_MARKETS`` once the booker verifies its
+selections against the betslip.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+from dataclasses import dataclass
+from typing import Optional
+
+from core.predictor.enrich import TeamForm
+from core.predictor.filter import Fixture
+
+logger = logging.getLogger("SportCrawl.Predictor.Screen")
+
+# Weight given to the Poisson model vs. the teams' raw observed rates.
+MODEL_WEIGHT = 0.6
+
+# Expected-goals clamp, guarding against degenerate form samples.
+LAMBDA_MIN, LAMBDA_MAX = 0.2, 4.0
+
+# A selection must clear both its probability floor and the conviction floor.
+PROBABILITY_FLOOR = {"GG": 0.62, "NG": 0.62, "Over 2.5": 0.62, "1X": 0.78, "X2": 0.78}
+CONVICTION_FLOOR = 0.55
+
+UNSAFE_MARKETS = ("Under", "Over 1.5", "Over 3.5", "Over 4.5")
+
+
+@dataclass
+class Pick:
+    """A single recommended selection, ready to be formatted for the booker."""
+
+    fixture: Fixture
+    market: str            # human label, e.g. "Both Teams to Score"
+    selection: str         # parser token, e.g. "GG", "Over 2.5", "1X"
+    probability: float     # blended model probability
+    conviction: float      # probability adjusted for agreement and sample size
+    rationale: str
+
+    @property
+    def line(self) -> str:
+        """The exact text ``core.prediction_parser`` will consume."""
+        return f"{self.fixture.home_name} vs {self.fixture.away_name} - {self.selection}"
+
+
+def _poisson_pmf(k: int, lam: float) -> float:
+    return math.exp(-lam) * lam**k / math.factorial(k)
+
+
+def _clamp(value: float) -> float:
+    return max(LAMBDA_MIN, min(LAMBDA_MAX, value))
+
+
+def expected_goals(home: TeamForm, away: TeamForm) -> tuple[float, float]:
+    """Expected goals for each side, from attack strength vs. opposing defence."""
+    lam_home = (home.attack_rate(at_home=True) + away.defence_rate(at_home=False)) / 2
+    lam_away = (away.attack_rate(at_home=False) + home.defence_rate(at_home=True)) / 2
+    return _clamp(lam_home), _clamp(lam_away)
+
+
+def _blend(model_p: float, empirical_p: float) -> float:
+    return MODEL_WEIGHT * model_p + (1 - MODEL_WEIGHT) * empirical_p
+
+
+def _conviction(probability: float, model_p: float, empirical_p: float, sample: int) -> float:
+    """
+    Discount a probability by how much the model and the observed rates
+    disagree, and by how thin the form sample is.
+    """
+    agreement = 1.0 - min(abs(model_p - empirical_p), 0.5)
+    sample_factor = min(sample / 10.0, 1.0)
+    return probability * agreement * sample_factor
+
+
+def _outcome_probabilities(lam_home: float, lam_away: float, max_goals: int = 8) -> tuple[float, float, float]:
+    """Home win / draw / away win, summing the independent-Poisson score grid."""
+    home_win = draw = away_win = 0.0
+    for h in range(max_goals + 1):
+        p_h = _poisson_pmf(h, lam_home)
+        for a in range(max_goals + 1):
+            p = p_h * _poisson_pmf(a, lam_away)
+            if h > a:
+                home_win += p
+            elif h == a:
+                draw += p
+            else:
+                away_win += p
+    return home_win, draw, away_win
+
+
+def screen_fixture(fixture: Fixture, home: TeamForm, away: TeamForm) -> list[Pick]:
+    """Score one fixture and return every selection that clears the floors."""
+    if not home.is_reliable or not away.is_reliable:
+        logger.debug(
+            "Skipping %s — insufficient form (%d/%d matches)",
+            fixture.label,
+            home.matches_used,
+            away.matches_used,
+        )
+        return []
+
+    lam_home, lam_away = expected_goals(home, away)
+    lam_total = lam_home + lam_away
+    sample = min(home.matches_used, away.matches_used)
+    picks: list[Pick] = []
+
+    # --- Both teams to score -------------------------------------------------
+    model_btts = (1 - math.exp(-lam_home)) * (1 - math.exp(-lam_away))
+    emp_btts = (home.btts_rate + away.btts_rate) / 2
+    p_btts = _blend(model_btts, emp_btts)
+
+    for selection, prob, model_p, emp_p in (
+        ("GG", p_btts, model_btts, emp_btts),
+        ("NG", 1 - p_btts, 1 - model_btts, 1 - emp_btts),
+    ):
+        if prob >= PROBABILITY_FLOOR[selection]:
+            conv = _conviction(prob, model_p, emp_p, sample)
+            if conv >= CONVICTION_FLOOR:
+                picks.append(
+                    Pick(
+                        fixture=fixture,
+                        market="Both Teams to Score",
+                        selection=selection,
+                        probability=prob,
+                        conviction=conv,
+                        rationale=(
+                            f"xG {lam_home:.2f}-{lam_away:.2f}; "
+                            f"BTTS in {home.btts_rate:.0%} of {home.name}'s and "
+                            f"{away.btts_rate:.0%} of {away.name}'s last {sample}"
+                        ),
+                    )
+                )
+
+    # --- Over 2.5 goals (2.5 only; see module docstring) ---------------------
+    model_over = 1 - sum(_poisson_pmf(k, lam_total) for k in range(3))
+    emp_over = (home.over25_rate + away.over25_rate) / 2
+    p_over = _blend(model_over, emp_over)
+
+    if p_over >= PROBABILITY_FLOOR["Over 2.5"]:
+        conv = _conviction(p_over, model_over, emp_over, sample)
+        if conv >= CONVICTION_FLOOR:
+            picks.append(
+                Pick(
+                    fixture=fixture,
+                    market="Over/Under 2.5",
+                    selection="Over 2.5",
+                    probability=p_over,
+                    conviction=conv,
+                    rationale=(
+                        f"combined xG {lam_total:.2f}; over 2.5 in "
+                        f"{home.over25_rate:.0%} / {away.over25_rate:.0%} of recent matches"
+                    ),
+                )
+            )
+
+    # --- Double chance -------------------------------------------------------
+    # The empirical counterpart is each side's recent non-loss / non-win rate.
+    # Without it the agreement discount would be 1.0 by construction, which
+    # would let double chance outrank every other market for free.
+    home_win, draw, away_win = _outcome_probabilities(lam_home, lam_away)
+    for selection, model_p, emp_p, label in (
+        (
+            "1X",
+            home_win + draw,
+            (home.non_loss_rate + away.non_win_rate) / 2,
+            f"{fixture.home_name} unbeaten",
+        ),
+        (
+            "X2",
+            away_win + draw,
+            (away.non_loss_rate + home.non_win_rate) / 2,
+            f"{fixture.away_name} unbeaten",
+        ),
+    ):
+        prob = _blend(model_p, emp_p)
+        if prob >= PROBABILITY_FLOOR[selection]:
+            conv = _conviction(prob, model_p, emp_p, sample)
+            if conv >= CONVICTION_FLOOR:
+                picks.append(
+                    Pick(
+                        fixture=fixture,
+                        market="Double Chance",
+                        selection=selection,
+                        probability=prob,
+                        conviction=conv,
+                        rationale=(
+                            f"{label}; xG {lam_home:.2f}-{lam_away:.2f}, "
+                            f"form {home.recent_results or '-'} vs {away.recent_results or '-'}"
+                        ),
+                    )
+                )
+
+    return picks
+
+
+def screen_fixtures(
+    fixtures: list[Fixture],
+    forms: dict[int, TeamForm],
+    limit: Optional[int] = None,
+    max_per_fixture: int = 1,
+) -> list[Pick]:
+    """
+    Screen every fixture and return all qualifying picks, best conviction first.
+
+    ``max_per_fixture`` defaults to 1 because selections on the same match are
+    strongly correlated: 1X, Over 2.5 and GG on one fixture all hinge on the
+    same 90 minutes, so stacking them into an accumulator multiplies the odds
+    while barely diversifying the risk. Raise it only for single bets.
+    """
+    picks: list[Pick] = []
+    for fixture in fixtures:
+        home = forms.get(fixture.home_id)
+        away = forms.get(fixture.away_id)
+        if not home or not away:
+            continue
+        candidates = screen_fixture(fixture, home, away)
+        candidates.sort(key=lambda p: p.conviction, reverse=True)
+        picks.extend(candidates[:max_per_fixture] if max_per_fixture else candidates)
+
+    for pick in picks:
+        if any(flag in pick.selection for flag in UNSAFE_MARKETS):
+            raise AssertionError(f"Generated an unsafe selection: {pick.selection}")
+
+    picks.sort(key=lambda p: p.conviction, reverse=True)
+    logger.info("Screened %d fixtures into %d qualifying picks", len(fixtures), len(picks))
+    return picks[:limit] if limit else picks

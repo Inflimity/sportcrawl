@@ -259,11 +259,51 @@ async def main() -> None:
         )
         uvicorn_server = uvicorn.Server(uvicorn_config)
 
+        # ── Startup auto-prediction on boot ──────────────────────────
+        async def run_startup_prediction() -> None:
+            # Wait for monitor initial scrape to complete and populate DB
+            await asyncio.sleep(10)
+            today_str = datetime.now(ZoneInfo(settings.app_timezone)).strftime("%Y-%m-%d")
+            matches = await db.get_matches_for_date(today_str)
+            if not matches:
+                return
+
+            try:
+                from services.pipeline import PredictionBookingPipeline, convert_matches_to_raw_dicts
+                raw_matches = convert_matches_to_raw_dicts(matches)
+                logger.info("🧠 Running initial startup statistical prediction on %d fixtures...", len(raw_matches))
+                pipeline = PredictionBookingPipeline(country_code="ng", headless=True)
+                res = await pipeline.run_pipeline(raw_matches, top_n=5, auto_book=True)
+
+                if res.picks:
+                    logger.info("🎯 Generated %d high-conviction banker picks on boot!", len(res.picks))
+                    if res.booking_result and res.booking_result.success:
+                        logger.info("🎟️ SportyBet Booking Code: %s (Odds: %s)", res.booking_result.booking_code, res.booking_result.total_odds)
+
+                    predict_msg = PredictionBookingPipeline.format_telegram_digest(
+                        res, f"🎯 Today's Top Banker Predictions ({today_str})"
+                    )
+                    pred_kb = None
+                    if res.booking_result and res.booking_result.success and res.booking_result.share_url:
+                        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                        pred_kb = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🔗 Open Betslip on SportyBet", url=res.booking_result.share_url)]
+                        ])
+
+                    await notifier.send_custom_message(
+                        text=predict_msg,
+                        parse_mode="HTML",
+                        reply_markup=pred_kb,
+                    )
+            except Exception as e:
+                logger.warning("Error running startup prediction: %s", e)
+
         tasks = [
             asyncio.create_task(engine.start(), name="alert-engine"),
             asyncio.create_task(monitor.start(), name="sofascore-monitor"),
             asyncio.create_task(uvicorn_server.serve(), name="api-server"),
             asyncio.create_task(run_digest_scheduler(), name="digest-scheduler"),
+            asyncio.create_task(run_startup_prediction(), name="startup-prediction"),
         ]
 
         await shutdown_event.wait()
@@ -316,10 +356,78 @@ def cli_entry() -> None:
         default="both",
         help="Format of the fixtures document to send (txt, json, both)",
     )
+    parser.add_argument(
+        "--book",
+        type=str,
+        help="Paste raw prediction text to auto-book on SportyBet and output booking code",
+    )
+    parser.add_argument(
+        "--predict",
+        action="store_true",
+        help="Run statistical prediction model on today's fixtures and auto-book top picks on SportyBet",
+    )
+    parser.add_argument(
+        "--top-picks",
+        type=int,
+        default=5,
+        help="Number of top statistical picks to screen (default: 5)",
+    )
 
     args = parser.parse_args()
 
-    if args.list_today or args.top or args.send_telegram:
+    if args.predict:
+        async def run_cli_predict():
+            settings = get_settings()
+            db = DatabaseManager(settings.database_url)
+            await db.init_db()
+            today_str = datetime.now(ZoneInfo(settings.app_timezone)).strftime("%Y-%m-%d")
+            matches = await db.get_matches_for_date(today_str)
+            if not matches:
+                monitor = SofaScoreMonitor(settings)
+                print(f"🔄 Fetching fixtures for {today_str} from SofaScore...")
+                raw_scraped = await monitor.fetch_today_matches(today_str)
+                for m in raw_scraped:
+                    await db.upsert_match(m, is_featured=m.get("is_featured", False))
+                matches = await db.get_matches_for_date(today_str)
+
+            if not matches:
+                print(f"⚠️ No matches available for {today_str}.")
+                await db.close()
+                return
+
+            from services.pipeline import PredictionBookingPipeline, convert_matches_to_raw_dicts
+            raw_matches = convert_matches_to_raw_dicts(matches)
+            pipeline = PredictionBookingPipeline(country_code="ng", headless=True)
+            print(f"🧠 Running statistical Poisson model across {len(raw_matches)} fixtures...")
+            res = await pipeline.run_pipeline(raw_matches, top_n=args.top_picks, auto_book=True)
+
+            print(PredictionBookingPipeline.format_telegram_digest(res, f"🎯 Today's AI Banker Predictions ({today_str})"))
+            await db.close()
+
+        asyncio.run(run_cli_predict())
+    elif args.book:
+        async def run_cli_book():
+            from core.booker_engine import BookerEngine
+            engine = BookerEngine(country_code="ng", headless=True)
+            print("🎟️ Running SportyBet Prediction Booker CLI...")
+            result = await engine.book_predictions(args.book)
+            if result.success:
+                print(f"\n✅ SUCCESS! Booking Code: \033[1;32m{result.booking_code}\033[0m")
+                print(f"📊 Total Odds: {result.total_odds}")
+                print(f"⚽ Selections ({result.selections_count}):")
+                for s in result.booked_selections:
+                    print(f"  • {s.home_team} vs {s.away_team} -> {s.selection_desc} ({s.market_desc}) @{s.odds or '—'}")
+                if result.share_url:
+                    print(f"🔗 Link: {result.share_url}")
+            else:
+                print(f"\n❌ Booking Failed: {result.error_message}")
+                if result.unmatched_selections:
+                    print("⚠️ Unmatched:")
+                    for u in result.unmatched_selections:
+                        print(f"  • {u.home_team} vs {u.away_team} ({u.selection_desc}): {u.error_msg}")
+
+        asyncio.run(run_cli_book())
+    elif args.list_today or args.top or args.send_telegram:
         asyncio.run(
             cli_list_today(
                 featured_only=args.top,

@@ -74,6 +74,20 @@ class TeamForm:
             return 0.0
         return sum(r in "DL" for r in self.recent_results) / len(self.recent_results)
 
+    @property
+    def win_rate(self) -> float:
+        """Share of recent matches won."""
+        if not self.recent_results:
+            return 0.0
+        return sum(r == "W" for r in self.recent_results) / len(self.recent_results)
+
+    @property
+    def loss_rate(self) -> float:
+        """Share of recent matches lost."""
+        if not self.recent_results:
+            return 0.0
+        return sum(r == "L" for r in self.recent_results) / len(self.recent_results)
+
     def attack_rate(self, at_home: bool) -> float:
         """Goals scored per match, venue-specific when the sample allows."""
         venue = self.gf_home if at_home else self.gf_away

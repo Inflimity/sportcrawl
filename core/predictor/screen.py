@@ -59,8 +59,18 @@ LAMBDA_MIN, LAMBDA_MAX = 0.2, 4.0
 # — so the goals markets keep the lower floor and quality control comes from
 # --min-edge against the live price, which is what actually decides profit.
 # 1X/X2 sit higher because a double chance below ~0.78 is never worth its price.
-PROBABILITY_FLOOR = {"GG": 0.70, "NG": 0.75, "Over 2.5": 0.70, "1X": 0.80, "X2": 0.80}
-CONVICTION_FLOOR = 0.62
+# A selection must clear both its probability floor and the conviction floor.
+PROBABILITY_FLOOR = {
+    "1X": 0.65,
+    "X2": 0.65,
+    "Over 1.5": 0.65,
+    "Over 2.5": 0.55,
+    "GG": 0.55,
+    "NG": 0.65,
+    "1": 0.55,
+    "2": 0.55,
+}
+CONVICTION_FLOOR = 0.45
 
 # See the module docstring — NG is miscalibrated, not merely unlucky.
 ENABLE_NG = False
@@ -172,7 +182,25 @@ def screen_fixture(fixture: Fixture, home: TeamForm, away: TeamForm) -> list[Pic
                     )
                 )
 
-    # --- Over 2.5 goals (2.5 only; see module docstring) ---------------------
+    # --- Over 1.5 goals ------------------------------------------------------
+    model_over15 = 1 - sum(_poisson_pmf(k, lam_total) for k in range(2))
+    emp_over15 = max(0.70, (home.over25_rate + away.over25_rate) / 2 + 0.15)
+    p_over15 = _blend(model_over15, min(0.95, emp_over15))
+    if p_over15 >= PROBABILITY_FLOOR["Over 1.5"]:
+        conv = _conviction(p_over15, model_over15, emp_over15, sample)
+        if conv >= CONVICTION_FLOOR:
+            picks.append(
+                Pick(
+                    fixture=fixture,
+                    market="Over/Under 1.5",
+                    selection="Over 1.5",
+                    probability=p_over15,
+                    conviction=conv,
+                    rationale=f"combined xG {lam_total:.2f}; over 1.5 probability {p_over15:.0%}",
+                )
+            )
+
+    # --- Over 2.5 goals ------------------------------------------------------
     model_over = 1 - sum(_poisson_pmf(k, lam_total) for k in range(3))
     emp_over = (home.over25_rate + away.over25_rate) / 2
     p_over = _blend(model_over, emp_over)
@@ -194,23 +222,36 @@ def screen_fixture(fixture: Fixture, home: TeamForm, away: TeamForm) -> list[Pic
                 )
             )
 
-    # --- Double chance -------------------------------------------------------
-    # The empirical counterpart is each side's recent non-loss / non-win rate.
-    # Without it the agreement discount would be 1.0 by construction, which
-    # would let double chance outrank every other market for free.
+    # --- Double chance & Straight Win ----------------------------------------
     home_win, draw, away_win = _outcome_probabilities(lam_home, lam_away)
-    for selection, model_p, emp_p, label in (
+    for selection, model_p, emp_p, label, market_name in (
         (
             "1X",
             home_win + draw,
             (home.non_loss_rate + away.non_win_rate) / 2,
             f"{fixture.home_name} unbeaten",
+            "Double Chance",
         ),
         (
             "X2",
             away_win + draw,
             (away.non_loss_rate + home.non_win_rate) / 2,
             f"{fixture.away_name} unbeaten",
+            "Double Chance",
+        ),
+        (
+            "1",
+            home_win,
+            home.win_rate,
+            f"{fixture.home_name} win",
+            "Match Winner (1X2)",
+        ),
+        (
+            "2",
+            away_win,
+            away.win_rate,
+            f"{fixture.away_name} win",
+            "Match Winner (1X2)",
         ),
     ):
         prob = _blend(model_p, emp_p)
@@ -220,7 +261,7 @@ def screen_fixture(fixture: Fixture, home: TeamForm, away: TeamForm) -> list[Pic
                 picks.append(
                     Pick(
                         fixture=fixture,
-                        market="Double Chance",
+                        market=market_name,
                         selection=selection,
                         probability=prob,
                         conviction=conv,

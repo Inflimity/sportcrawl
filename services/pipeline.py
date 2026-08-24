@@ -123,7 +123,7 @@ class PredictionBookingPipeline:
         logger.info("Starting prediction pipeline with %d raw fixtures (top_n=%d)...", len(raw_matches), top_n)
 
         # 1. Filter tradeable competitive fixtures
-        fixtures, stats = filter_fixtures(raw_matches, allow_unlisted=False)
+        fixtures, stats = filter_fixtures(raw_matches, allow_unlisted=True)
         if not fixtures:
             logger.warning("No tradeable fixtures survived filtering.")
             return PipelineResult(picks=[], filter_stats=stats, picks_text="")
@@ -152,7 +152,7 @@ class PredictionBookingPipeline:
         all_screened = screen_fixtures(
             fixtures=fixtures,
             forms=forms,
-            limit=max(top_n * 2, 30),
+            limit=max(top_n * 2, 40),
             max_per_fixture=1,
         )
         logger.info("Screened %d qualifying picks", len(all_screened))
@@ -202,7 +202,7 @@ class PredictionBookingPipeline:
         Generate BOTH Top 10 Bankers and Top 20 Mega Accumulator tickets simultaneously.
         """
         logger.info("Running dual prediction pipeline (Top 10 & Top 20) with %d raw fixtures...", len(raw_matches))
-        fixtures, stats = filter_fixtures(raw_matches, allow_unlisted=False)
+        fixtures, stats = filter_fixtures(raw_matches, allow_unlisted=True)
         if not fixtures:
             empty = PipelineResult(picks=[], filter_stats=stats, picks_text="")
             return DualPipelineResult(tier_10=empty, tier_20=empty, filter_stats=stats)

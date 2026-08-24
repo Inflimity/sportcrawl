@@ -86,6 +86,7 @@ class Pick:
     probability: float     # blended model probability
     conviction: float      # probability adjusted for agreement and sample size
     rationale: str
+    tier: int = 3          # 1=Top 5 Leagues / UCL, 2=Major National, 3=Other global
 
     @property
     def line(self) -> str:
@@ -152,6 +153,8 @@ def screen_fixture(fixture: Fixture, home: TeamForm, away: TeamForm) -> list[Pic
     lam_home, lam_away = expected_goals(home, away)
     lam_total = lam_home + lam_away
     sample = min(home.matches_used, away.matches_used)
+    from core.predictor.leagues import competition_tier
+    tier = competition_tier(fixture.category, fixture.tournament)
     picks: list[Pick] = []
 
     # --- Both teams to score -------------------------------------------------
@@ -179,6 +182,7 @@ def screen_fixture(fixture: Fixture, home: TeamForm, away: TeamForm) -> list[Pic
                             f"BTTS in {home.btts_rate:.0%} of {home.name}'s and "
                             f"{away.btts_rate:.0%} of {away.name}'s last {sample}"
                         ),
+                        tier=tier,
                     )
                 )
 
@@ -197,6 +201,7 @@ def screen_fixture(fixture: Fixture, home: TeamForm, away: TeamForm) -> list[Pic
                     probability=p_over15,
                     conviction=conv,
                     rationale=f"combined xG {lam_total:.2f}; over 1.5 probability {p_over15:.0%}",
+                    tier=tier,
                 )
             )
 
@@ -219,6 +224,7 @@ def screen_fixture(fixture: Fixture, home: TeamForm, away: TeamForm) -> list[Pic
                         f"combined xG {lam_total:.2f}; over 2.5 in "
                         f"{home.over25_rate:.0%} / {away.over25_rate:.0%} of recent matches"
                     ),
+                    tier=tier,
                 )
             )
 
@@ -269,6 +275,7 @@ def screen_fixture(fixture: Fixture, home: TeamForm, away: TeamForm) -> list[Pic
                             f"{label}; xG {lam_home:.2f}-{lam_away:.2f}, "
                             f"form {home.recent_results or '-'} vs {away.recent_results or '-'}"
                         ),
+                        tier=tier,
                     )
                 )
 
@@ -282,12 +289,9 @@ def screen_fixtures(
     max_per_fixture: int = 1,
 ) -> list[Pick]:
     """
-    Screen every fixture and return all qualifying picks, best conviction first.
-
-    ``max_per_fixture`` defaults to 1 because selections on the same match are
-    strongly correlated: 1X, Over 2.5 and GG on one fixture all hinge on the
-    same 90 minutes, so stacking them into an accumulator multiplies the odds
-    while barely diversifying the risk. Raise it only for single bets.
+    Screen every fixture and return all qualifying picks, prioritized by competition tier
+    (Top 5 European Leagues & UCL/UEL first, then Major National Flights, then other leagues)
+    and sorted by conviction score.
     """
     picks: list[Pick] = []
     for fixture in fixtures:
@@ -296,9 +300,11 @@ def screen_fixtures(
         if not home or not away:
             continue
         candidates = screen_fixture(fixture, home, away)
+        # For a single match, pick the best market by conviction
         candidates.sort(key=lambda p: p.conviction, reverse=True)
         picks.extend(candidates[:max_per_fixture] if max_per_fixture else candidates)
 
-    picks.sort(key=lambda p: p.conviction, reverse=True)
-    logger.info("Screened %d fixtures into %d qualifying picks", len(fixtures), len(picks))
+    # Sort all picks: Tier 1 (Elite) first, Tier 2 (Major) second, Tier 3 third; and within each tier, highest conviction first
+    picks.sort(key=lambda p: (p.tier, -p.conviction))
+    logger.info("Screened %d fixtures into %d qualifying picks (tier prioritized)", len(fixtures), len(picks))
     return picks[:limit] if limit else picks

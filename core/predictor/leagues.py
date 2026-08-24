@@ -17,6 +17,38 @@ from __future__ import annotations
 
 import re
 
+# Tier 1: Top 5 European Flights & UEFA Club Competitions
+ELITE_COMPETITIONS: dict[str, tuple[str, ...]] = {
+    "England": ("premier league",),
+    "Spain": ("laliga", "la liga", "primera division"),
+    "Italy": ("serie a",),
+    "Germany": ("bundesliga",),
+    "France": ("ligue 1",),
+    "Europe": ("champions league", "europa league", "conference league", "uefa super cup"),
+}
+
+# Tier 2: Major Secondary European & Top Americas / Asian Flights
+MAJOR_COMPETITIONS: dict[str, tuple[str, ...]] = {
+    "England": ("championship", "fa cup", "efl cup", "carabao"),
+    "Spain": ("copa del rey", "segunda division", "laliga 2", "la liga 2"),
+    "Italy": ("serie b", "coppa italia"),
+    "Germany": ("2. bundesliga", "dfb pokal"),
+    "France": ("ligue 2", "coupe de france"),
+    "Netherlands": ("eredivisie", "knvb beker"),
+    "Portugal": ("liga portugal", "primeira liga", "taca de portugal", "taça de portugal"),
+    "Belgium": ("pro league", "first division a"),
+    "Scotland": ("premiership", "scottish cup"),
+    "Turkey": ("super lig", "süper lig", "turkish cup"),
+    "Saudi Arabia": ("saudi pro league", "pro league"),
+    "USA": ("major league soccer", "mls"),
+    "Brazil": ("brasileirão série a", "brasileirao serie a", "brasileirão betano", "copa do brasil"),
+    "Argentina": ("liga profesional", "copa de la liga profesional", "copa argentina"),
+    "South America": ("copa libertadores", "copa sudamericana"),
+    "Mexico": ("liga mx",),
+    "Japan": ("j1 league",),
+    "South Korea": ("k league 1",),
+}
+
 # Country/confederation -> substrings that identify a tradeable competition.
 # Matching is case-insensitive against the normalized tournament name.
 ALLOWED_COMPETITIONS: dict[str, tuple[str, ...]] = {
@@ -117,3 +149,35 @@ def is_allowed(category: str, tournament: str) -> bool:
 
     name = normalize(tournament)
     return any(p in name for p in patterns)
+
+
+def competition_tier(category: str, tournament: str) -> int:
+    """
+    Return priority tier for a competition:
+      Tier 1 (Top European 5 Leagues + UEFA Champions/Europa/Conference League) -> 1
+      Tier 2 (Championship, Eredivisie, Liga Portugal, MLS, Brasileirao, Cups, etc.) -> 2
+      Tier 3 (Other global competitive leagues) -> 3
+    """
+    cat = (category or "").strip()
+    tourn = normalize(tournament)
+
+    # 1. Check Tier 1 Elite
+    for country, patterns in ELITE_COMPETITIONS.items():
+        if country.lower() in cat.lower() or cat.lower() in country.lower():
+            if any(p in tourn for p in patterns):
+                return 1
+
+    # 2. Check Tier 2 Major
+    for country, patterns in MAJOR_COMPETITIONS.items():
+        if country.lower() in cat.lower() or cat.lower() in country.lower():
+            if any(p in tourn for p in patterns):
+                return 2
+
+    # 3. Direct tournament name checks
+    if any(k in tourn for k in ("champions league", "premier league", "serie a", "la liga", "laliga", "bundesliga", "ligue 1")):
+        return 1
+
+    if any(k in tourn for k in ("eredivisie", "super lig", "süper lig", "primeira liga", "pro league", "primera division", "mls", "brasileirão", "brasileirao")):
+        return 2
+
+    return 3

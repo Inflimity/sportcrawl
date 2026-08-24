@@ -58,6 +58,20 @@ class PipelineResult:
         }
 
 
+@dataclass
+class DualPipelineResult:
+    tier_10: PipelineResult
+    tier_20: PipelineResult
+    filter_stats: FilterStats
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tier_10": self.tier_10.to_dict(),
+            "tier_20": self.tier_20.to_dict(),
+            "total_screened": self.filter_stats.total,
+        }
+
+
 def convert_matches_to_raw_dicts(matches: list[FootballMatch]) -> list[dict[str, Any]]:
     """Convert Database FootballMatch model instances into the dictionary schema expected by filter_fixtures."""
     raw_list = []
@@ -74,9 +88,10 @@ def convert_matches_to_raw_dicts(matches: list[FootballMatch]) -> list[dict[str,
                 "id": m.away_team_id,
                 "name": m.away_team,
             },
-            "status_type": m.status_type,
-            "start_time_utc": m.start_time.isoformat() if m.start_time else "",
-            "start_time_wat": str(m.start_time),
+            "status": m.status,
+            "start_time": m.start_time,
+            "home_score": m.home_score,
+            "away_score": m.away_score,
         })
     return raw_list
 
@@ -99,7 +114,7 @@ class PredictionBookingPipeline:
         """
         Execute prediction screening on fixtures and automatically book them on SportyBet.
         """
-        logger.info("Starting prediction pipeline with %d raw fixtures...", len(raw_matches))
+        logger.info("Starting prediction pipeline with %d raw fixtures (top_n=%d)...", len(raw_matches), top_n)
 
         # 1. Filter tradeable competitive fixtures
         fixtures, stats = filter_fixtures(raw_matches, allow_unlisted=False)
@@ -131,7 +146,7 @@ class PredictionBookingPipeline:
         all_screened = screen_fixtures(
             fixtures=fixtures,
             forms=forms,
-            limit=top_n * 2,
+            limit=max(top_n * 2, 30),
             max_per_fixture=1,
         )
         logger.info("Screened %d qualifying picks", len(all_screened))
@@ -171,6 +186,72 @@ class PredictionBookingPipeline:
             booking_result=booking_res,
         )
 
+    async def run_dual_pipeline(
+        self,
+        raw_matches: list[dict[str, Any]],
+        form_matches: int = 10,
+        auto_book: bool = True,
+    ) -> DualPipelineResult:
+        """
+        Generate BOTH Top 10 Bankers and Top 20 Mega Accumulator tickets simultaneously.
+        """
+        logger.info("Running dual prediction pipeline (Top 10 & Top 20) with %d raw fixtures...", len(raw_matches))
+        fixtures, stats = filter_fixtures(raw_matches, allow_unlisted=False)
+        if not fixtures:
+            empty = PipelineResult(picks=[], filter_stats=stats, picks_text="")
+            return DualPipelineResult(tier_10=empty, tier_20=empty, filter_stats=stats)
+
+        # Pre-filter against SportyBet active fixtures
+        if auto_book:
+            sporty_events = await self.booker.service.fetch_available_events()
+            if sporty_events:
+                from core.team_matcher import match_fixture
+                bookable_fixtures = [
+                    fx for fx in fixtures
+                    if match_fixture(fx.home_name, fx.away_name, sporty_events, threshold=0.48)
+                ]
+                if bookable_fixtures:
+                    fixtures = bookable_fixtures
+
+        # Fetch form once for all matches
+        forms = await fetch_team_forms(fixtures, form_matches=form_matches)
+
+        # Screen up to 35 picks
+        all_screened = screen_fixtures(fixtures=fixtures, forms=forms, limit=35, max_per_fixture=1)
+        if not all_screened:
+            empty = PipelineResult(picks=[], filter_stats=stats, picks_text="")
+            return DualPipelineResult(tier_10=empty, tier_20=empty, filter_stats=stats)
+
+        # Top 10 Picks
+        picks_10 = all_screened[:10]
+        picks_text_10 = format_picks(picks_10)
+        book_res_10 = None
+        if auto_book and picks_10:
+            book_res_10 = await self.booker.book_predictions(picks_text_10)
+
+        tier_10 = PipelineResult(
+            picks=picks_10,
+            filter_stats=stats,
+            picks_text=picks_text_10,
+            booking_result=book_res_10,
+        )
+
+        # Top 20 Picks
+        picks_20 = all_screened[:20]
+        picks_text_20 = format_picks(picks_20)
+        book_res_20 = None
+        if auto_book and picks_20:
+            book_res_20 = await self.booker.book_predictions(picks_text_20)
+
+        tier_20 = PipelineResult(
+            picks=picks_20,
+            filter_stats=stats,
+            picks_text=picks_text_20,
+            booking_result=book_res_20,
+        )
+
+        return DualPipelineResult(tier_10=tier_10, tier_20=tier_20, filter_stats=stats)
+
     @staticmethod
     def format_telegram_digest(result: PipelineResult, title: str = "🎯 Daily Top Banker Predictions") -> str:
         """Format the prediction pipeline output for Telegram with rich HTML."""
@@ -206,5 +287,44 @@ class PredictionBookingPipeline:
 
         if result.booking_result and result.booking_result.share_url:
             lines.append(f'\n🔗 <a href="{result.booking_result.share_url}">Open Betslip on SportyBet ↗</a>')
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def format_telegram_dual_digest(dual_res: DualPipelineResult, date_str: str) -> str:
+        """Format both Top 10 Bankers and Top 20 Mega Accumulator tickets into a dual summary."""
+        lines = [
+            f"<b>🎯 Daily AI Predictions & Auto-Booked Tickets ({date_str})</b>\n",
+            f"🧠 <i>Screened {dual_res.filter_stats.total} fixtures across 75+ elite competitions</i>\n",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "🎯 <b>TICKET 1: TOP 10 BANKERS</b> (High Conviction)",
+        ]
+
+        if dual_res.tier_10.booking_result and dual_res.tier_10.booking_result.success:
+            b10 = dual_res.tier_10.booking_result
+            lines.extend([
+                f"🎟️ <b>SportyBet Code:</b> <code>{b10.booking_code}</code> <i>(tap to copy)</i>",
+                f"📊 <b>Total Odds:</b> <b>{b10.total_odds or '—'}</b> | ⚽ <b>{len(dual_res.tier_10.picks)} Games</b>",
+            ])
+        lines.append("")
+
+        for idx, p in enumerate(dual_res.tier_10.picks, 1):
+            lines.append(f"<b>{idx}.</b> {p.fixture.home_name} vs {p.fixture.away_name} ➔ <b>{p.selection}</b> <i>({p.market}, {round(p.probability * 100)}%)</i>")
+
+        lines.extend([
+            "\n━━━━━━━━━━━━━━━━━━━━",
+            "🚀 <b>TICKET 2: TOP 20 MEGA ACCUMULATOR</b> (Extended Slip)",
+        ])
+
+        if dual_res.tier_20.booking_result and dual_res.tier_20.booking_result.success:
+            b20 = dual_res.tier_20.booking_result
+            lines.extend([
+                f"🎟️ <b>SportyBet Code:</b> <code>{b20.booking_code}</code> <i>(tap to copy)</i>",
+                f"📊 <b>Total Odds:</b> <b>{b20.total_odds or '—'}</b> | ⚽ <b>{len(dual_res.tier_20.picks)} Games</b>",
+            ])
+        lines.append("")
+
+        for idx, p in enumerate(dual_res.tier_20.picks, 1):
+            lines.append(f"<b>{idx}.</b> {p.fixture.home_name} vs {p.fixture.away_name} ➔ <b>{p.selection}</b> <i>({p.market})</i>")
 
         return "\n".join(lines)

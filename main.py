@@ -273,26 +273,25 @@ async def main() -> None:
                 raw_matches = convert_matches_to_raw_dicts(matches)
                 logger.info("🧠 Running initial startup statistical prediction on %d fixtures...", len(raw_matches))
                 pipeline = PredictionBookingPipeline(country_code="ng", headless=True)
-                res = await pipeline.run_pipeline(raw_matches, top_n=10, auto_book=True)
+                dual_res = await pipeline.run_dual_pipeline(raw_matches, auto_book=True)
 
-                if res.picks:
-                    logger.info("🎯 Generated %d high-conviction banker picks on boot!", len(res.picks))
-                    if res.booking_result and res.booking_result.success:
-                        logger.info("🎟️ SportyBet Booking Code: %s (Odds: %s)", res.booking_result.booking_code, res.booking_result.total_odds)
-
-                    predict_msg = PredictionBookingPipeline.format_telegram_digest(
-                        res, f"🎯 Today's Top Banker Predictions ({today_str})"
-                    )
-                    pred_kb = None
-                    if res.booking_result and res.booking_result.success and res.booking_result.share_url:
+                if dual_res.tier_10.picks or dual_res.tier_20.picks:
+                    logger.info("🎯 Generated Top 10 (%d picks) and Top 20 (%d picks) on boot!", len(dual_res.tier_10.picks), len(dual_res.tier_20.picks))
+                    predict_msg = PredictionBookingPipeline.format_telegram_dual_digest(dual_res, today_str)
+                    links = []
+                    if dual_res.tier_10.booking_result and dual_res.tier_10.booking_result.success and dual_res.tier_10.booking_result.share_url:
                         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-                        pred_kb = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("🔗 Open Betslip on SportyBet", url=res.booking_result.share_url)]
-                        ])
+                        links.append(InlineKeyboardButton("🔗 Top 10 Betslip", url=dual_res.tier_10.booking_result.share_url))
+                    if dual_res.tier_20.booking_result and dual_res.tier_20.booking_result.success and dual_res.tier_20.booking_result.share_url:
+                        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                        links.append(InlineKeyboardButton("🔗 Top 20 Betslip", url=dual_res.tier_20.booking_result.share_url))
+
+                    pred_kb = InlineKeyboardMarkup([links]) if links else None
 
                     await notifier.send_custom_message(
                         text=predict_msg,
                         parse_mode="HTML",
+                        disable_web_page_preview=True,
                         reply_markup=pred_kb,
                     )
             except Exception as e:

@@ -248,7 +248,7 @@ class TelegramNotifier:
             self._app.add_handler(CommandHandler(["export", "file", "download", "json", "txt"], self._cmd_export))
             self._app.add_handler(CommandHandler(["refresh"], self._cmd_refresh))
             self._app.add_handler(CommandHandler(["book", "booker", "slip", "sportybet"], self._cmd_book))
-            self._app.add_handler(CommandHandler(["predict", "picks", "bankers", "ai"], self._cmd_predict))
+            self._app.add_handler(CommandHandler(["predict", "picks", "bankers", "ai", "top10", "top20"], self._cmd_predict))
 
             # Callbacks
             self._app.add_handler(CallbackQueryHandler(self._handle_callback))
@@ -668,20 +668,55 @@ class TelegramNotifier:
                 parse_mode=ParseMode.HTML,
             )
 
-            # 2. Run prediction and auto-booking pipeline
+            # 2. Check desired tier from command arguments or command name
+            cmd_text = ""
+            args_list = []
+            if update.message and update.message.text:
+                parts = update.message.text.strip().split()
+                cmd_text = parts[0].lower()
+                args_list = parts[1:]
+            elif context and context.args:
+                args_list = context.args
+
+            req_n = None
+            if "top10" in cmd_text or ("10" in args_list):
+                req_n = 10
+            elif "top20" in cmd_text or ("20" in args_list):
+                req_n = 20
+
             from services.pipeline import PredictionBookingPipeline
             pipeline = PredictionBookingPipeline(country_code="ng", headless=True)
-            result = await pipeline.run_pipeline(raw_matches, top_n=10, auto_book=True)
 
-            text_response = PredictionBookingPipeline.format_telegram_digest(
-                result, f"🎯 Today's AI Banker Predictions ({today_str})"
-            )
-
-            keyboard = None
-            if result.booking_result and result.booking_result.success and result.booking_result.share_url:
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔗 Open Betslip on SportyBet", url=result.booking_result.share_url)]
+            if req_n in (10, 20):
+                # Single tier request
+                result = await pipeline.run_pipeline(raw_matches, top_n=req_n, auto_book=True)
+                title = f"🎯 Today's Top {req_n} Banker Predictions ({today_str})"
+                text_response = PredictionBookingPipeline.format_telegram_digest(result, title)
+                keyboard_rows = []
+                if result.booking_result and result.booking_result.success and result.booking_result.share_url:
+                    keyboard_rows.append([InlineKeyboardButton(f"🔗 Open Top {req_n} Betslip on SportyBet", url=result.booking_result.share_url)])
+                keyboard_rows.append([
+                    InlineKeyboardButton("🎯 Top 10", callback_data="btn_predict_10"),
+                    InlineKeyboardButton("🚀 Top 20", callback_data="btn_predict_20"),
                 ])
+                keyboard = InlineKeyboardMarkup(keyboard_rows)
+            else:
+                # Default /predict: generate both Top 10 & Top 20 tickets
+                dual_res = await pipeline.run_dual_pipeline(raw_matches, auto_book=True)
+                text_response = PredictionBookingPipeline.format_telegram_dual_digest(dual_res, today_str)
+                keyboard_rows = []
+                links = []
+                if dual_res.tier_10.booking_result and dual_res.tier_10.booking_result.success and dual_res.tier_10.booking_result.share_url:
+                    links.append(InlineKeyboardButton("🔗 Top 10 Betslip", url=dual_res.tier_10.booking_result.share_url))
+                if dual_res.tier_20.booking_result and dual_res.tier_20.booking_result.success and dual_res.tier_20.booking_result.share_url:
+                    links.append(InlineKeyboardButton("🔗 Top 20 Betslip", url=dual_res.tier_20.booking_result.share_url))
+                if links:
+                    keyboard_rows.append(links)
+                keyboard_rows.append([
+                    InlineKeyboardButton("🎯 Top 10 Only", callback_data="btn_predict_10"),
+                    InlineKeyboardButton("🚀 Top 20 Only", callback_data="btn_predict_20"),
+                ])
+                keyboard = InlineKeyboardMarkup(keyboard_rows)
 
             await status_msg.edit_text(
                 text_response,
@@ -707,6 +742,14 @@ class TelegramNotifier:
         today_str = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d")
 
         if data == "btn_predict":
+            await self._cmd_predict(update, context)
+        elif data == "btn_predict_10":
+            if context:
+                context.args = ["10"]
+            await self._cmd_predict(update, context)
+        elif data == "btn_predict_20":
+            if context:
+                context.args = ["20"]
             await self._cmd_predict(update, context)
         elif data == "btn_today":
             await self._cmd_today(update, context)
@@ -934,22 +977,21 @@ class TelegramNotifier:
         except Exception as e:
             logger.warning("Failed to send scheduled digest summary card: %s", e)
 
-        # 2. Automatically generate and send AI Banker Picks & SportyBet Booking Code
+        # 2. Automatically generate and send Top 10 & Top 20 AI Banker Picks & SportyBet Booking Codes
         try:
             from services.pipeline import PredictionBookingPipeline, convert_matches_to_raw_dicts
             raw_matches = convert_matches_to_raw_dicts(all_matches)
             pipeline = PredictionBookingPipeline(country_code="ng", headless=True)
-            pipe_res = await pipeline.run_pipeline(raw_matches, top_n=10, auto_book=True)
+            dual_res = await pipeline.run_dual_pipeline(raw_matches, auto_book=True)
 
-            if pipe_res.picks:
-                predict_msg = PredictionBookingPipeline.format_telegram_digest(
-                    pipe_res, f"🎯 Today's AI Banker Selections ({today_str})"
-                )
-                pred_kb = None
-                if pipe_res.booking_result and pipe_res.booking_result.success and pipe_res.booking_result.share_url:
-                    pred_kb = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔗 Open Betslip on SportyBet", url=pipe_res.booking_result.share_url)]
-                    ])
+            if dual_res.tier_10.picks or dual_res.tier_20.picks:
+                predict_msg = PredictionBookingPipeline.format_telegram_dual_digest(dual_res, today_str)
+                links = []
+                if dual_res.tier_10.booking_result and dual_res.tier_10.booking_result.success and dual_res.tier_10.booking_result.share_url:
+                    links.append(InlineKeyboardButton("🔗 Top 10 Betslip", url=dual_res.tier_10.booking_result.share_url))
+                if dual_res.tier_20.booking_result and dual_res.tier_20.booking_result.success and dual_res.tier_20.booking_result.share_url:
+                    links.append(InlineKeyboardButton("🔗 Top 20 Betslip", url=dual_res.tier_20.booking_result.share_url))
+                pred_kb = InlineKeyboardMarkup([links]) if links else None
 
                 await self._bot.send_message(
                     chat_id=self._admin_chat_id,
@@ -958,7 +1000,7 @@ class TelegramNotifier:
                     disable_web_page_preview=True,
                     reply_markup=pred_kb,
                 )
-                logger.info("Sent scheduled AI picks & booking code to Telegram")
+                logger.info("Sent scheduled Top 10 & Top 20 AI picks and booking codes to Telegram")
         except Exception as e:
             logger.warning("Failed to generate scheduled AI predictions in digest: %s", e)
 

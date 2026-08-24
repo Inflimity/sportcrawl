@@ -71,16 +71,20 @@ flowchart TD
 - Coordinates the end-to-end flow:
   1. Pre-filters fixtures against active SportyBet fixtures to guarantee 100% bookability.
   2. Runs form enrichment and Poisson statistical screening.
-  3. Auto-books the selections on SportyBet.
-  4. Generates rich HTML cards with conviction stats, rationales, and the copyable booking code.
+  3. **Dual Tier Engine (`run_dual_pipeline`)**: Generates both:
+     - **🎯 Ticket 1: Top 10 High-Conviction Bankers** (with dedicated SportyBet booking code & odds)
+     - **🚀 Ticket 2: Top 20 Mega Accumulator** (with dedicated SportyBet booking code & odds)
+  4. Auto-books both selections on SportyBet and generates rich HTML Telegram digest cards with one-tap copyable codes and direct betslip link buttons.
 
 ### 4. Telegram Bot & Scheduler (`notifiers/telegram_bot.py`)
 - **Commands**:
-  - `/predict` (or `/picks`, `/bankers`): Runs the statistical screener on today's matches and returns the picks + SportyBet code.
+  - `/predict` (or `/picks`, `/bankers`): Generates **both Top 10 Bankers & Top 20 Mega Accumulator** with individual SportyBet booking codes & buttons.
+  - `/top10` (or `/predict 10`): Generates specifically the Top 10 Banker Ticket.
+  - `/top20` (or `/predict 20`): Generates specifically the Top 20 Mega Accumulator Ticket.
   - `/book [text]`: Auto-books pasted prediction text directly.
   - `/today`, `/upcoming`, `/live`, `/top`: Fixtures and score tables.
   - `/export`: Download full `.txt` or `.json` match documents.
-- **Autonomous Scheduled Digests**: Runs daily at **08:00, 15:00, and 22:00 WAT** with fixture snapshots, file attachments, and AI banker picks.
+- **Autonomous Scheduled Digests**: Runs daily at **08:00, 15:00, and 22:00 WAT** with fixture snapshots, file attachments, and **Dual Ticket (Top 10 & Top 20)** banker picks.
 
 ### 5. Web Dashboard (`static/`)
 - Fast, dark-mode glassmorphic interface at `http://localhost:8000`.

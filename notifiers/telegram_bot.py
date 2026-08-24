@@ -671,7 +671,7 @@ class TelegramNotifier:
             # 2. Run prediction and auto-booking pipeline
             from services.pipeline import PredictionBookingPipeline
             pipeline = PredictionBookingPipeline(country_code="ng", headless=True)
-            result = await pipeline.run_pipeline(raw_matches, top_n=5, auto_book=True)
+            result = await pipeline.run_pipeline(raw_matches, top_n=10, auto_book=True)
 
             text_response = PredictionBookingPipeline.format_telegram_digest(
                 result, f"🎯 Today's AI Banker Predictions ({today_str})"
@@ -939,7 +939,7 @@ class TelegramNotifier:
             from services.pipeline import PredictionBookingPipeline, convert_matches_to_raw_dicts
             raw_matches = convert_matches_to_raw_dicts(all_matches)
             pipeline = PredictionBookingPipeline(country_code="ng", headless=True)
-            pipe_res = await pipeline.run_pipeline(raw_matches, top_n=5, auto_book=True)
+            pipe_res = await pipeline.run_pipeline(raw_matches, top_n=10, auto_book=True)
 
             if pipe_res.picks:
                 predict_msg = PredictionBookingPipeline.format_telegram_digest(

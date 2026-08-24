@@ -273,7 +273,7 @@ async def main() -> None:
                 raw_matches = convert_matches_to_raw_dicts(matches)
                 logger.info("🧠 Running initial startup statistical prediction on %d fixtures...", len(raw_matches))
                 pipeline = PredictionBookingPipeline(country_code="ng", headless=True)
-                res = await pipeline.run_pipeline(raw_matches, top_n=5, auto_book=True)
+                res = await pipeline.run_pipeline(raw_matches, top_n=10, auto_book=True)
 
                 if res.picks:
                     logger.info("🎯 Generated %d high-conviction banker picks on boot!", len(res.picks))
@@ -369,8 +369,8 @@ def cli_entry() -> None:
     parser.add_argument(
         "--top-picks",
         type=int,
-        default=5,
-        help="Number of top statistical picks to screen (default: 5)",
+        default=10,
+        help="Number of top statistical picks to screen (default: 10)",
     )
 
     args = parser.parse_args()

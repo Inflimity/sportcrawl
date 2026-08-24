@@ -106,7 +106,16 @@ class SportyBetBookerService:
                 if r.status_code == 200:
                     tournaments = r.json().get("data", [])
                     for t in tournaments:
+                        t_name = (t.get("name") or "").lower()
+                        cat_name = (t.get("categoryName") or "").lower()
+                        # Exclude Simulated Reality / eSports / Virtuals
+                        if any(x in t_name or x in cat_name for x in ("srl", "simulated", "virtual", "cyber", "esport")):
+                            continue
                         for ev in t.get("events", []):
+                            h_name = (ev.get("homeTeamName") or "").lower()
+                            a_name = (ev.get("awayTeamName") or "").lower()
+                            if any(x in h_name or x in a_name for x in ("srl", "simulated reality")):
+                                continue
                             events.append(ev)
         except Exception as e:
             logger.warning("Failed to fetch SportyBet events via API: %s", e)

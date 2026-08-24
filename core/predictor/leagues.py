@@ -69,6 +69,8 @@ EXCLUSION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\bamateur\b|\bpromocional\b",
         r"\breserve\b|\breserves\b|\bii\b",
         r"\bfutsal\b|\bbeach\b",
+        r"\bsrl\b|\bsimulated\b|\breality\b",  # Simulated Reality Leagues
+        r"\besport|\befootball\b|\bcyber\b|\bvirtual\b", # Virtual/eSports
     )
 )
 

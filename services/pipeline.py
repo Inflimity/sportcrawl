@@ -92,7 +92,7 @@ class PredictionBookingPipeline:
     async def run_pipeline(
         self,
         raw_matches: list[dict[str, Any]],
-        top_n: int = 5,
+        top_n: int = 10,
         form_matches: int = 10,
         auto_book: bool = True,
     ) -> PipelineResult:

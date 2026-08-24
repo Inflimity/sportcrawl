@@ -267,20 +267,31 @@ async def fetch_team_forms(
         missing = [tid for tid in team_ids if tid not in raw_by_team]
         if missing:
             logger.info("Retrying %d teams that returned no history...", len(missing))
-            await asyncio.sleep(2.0)
-            for start in range(0, len(missing), 4):
-                chunk = missing[start : start + 4]
+            await asyncio.sleep(1.0)
+            for start in range(0, len(missing), 6):
+                chunk = missing[start : start + 6]
                 try:
                     batch = await page.evaluate(
                         """async ({ids, base}) => {
                             const out = {};
-                            for (const id of ids) {
-                                try {
-                                    const r = await fetch(`${base}/team/${id}/events/last/0`,
-                                                          {signal: AbortSignal.timeout(12000)});
-                                    out[id] = r.ok ? ((await r.json()).events || []) : null;
-                                } catch (e) { out[id] = null; }
-                            }
+                            const fetchWithTimeout = (url, ms = 6000) => {
+                                return new Promise((resolve) => {
+                                    const timer = setTimeout(() => resolve(null), ms);
+                                    fetch(url)
+                                        .then(r => r.ok ? r.json() : null)
+                                        .then(data => {
+                                            clearTimeout(timer);
+                                            resolve(data ? (data.events || []) : null);
+                                        })
+                                        .catch(() => {
+                                            clearTimeout(timer);
+                                            resolve(null);
+                                        });
+                                });
+                            };
+                            await Promise.all(ids.map(async (id) => {
+                                out[id] = await fetchWithTimeout(`${base}/team/${id}/events/last/0`, 6000);
+                            }));
                             return out;
                         }""",
                         {"ids": chunk, "base": API_BASE},
@@ -290,7 +301,7 @@ async def fetch_team_forms(
                             raw_by_team[int(key)] = events
                 except Exception as retry_err:
                     logger.warning("Retry batch failed: %s", retry_err)
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.4)
 
             still_missing = [tid for tid in team_ids if tid not in raw_by_team]
             logger.info(

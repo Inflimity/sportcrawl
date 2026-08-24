@@ -52,7 +52,10 @@ MAJOR_COMPETITIONS: dict[str, tuple[str, ...]] = {
 # Country/confederation -> substrings that identify a tradeable competition.
 # Matching is case-insensitive against the normalized tournament name.
 ALLOWED_COMPETITIONS: dict[str, tuple[str, ...]] = {
-    "England": ("premier league", "championship", "efl cup", "carabao", "fa cup"),
+    "England": (
+        "premier league", "championship", "efl cup", "carabao", "fa cup",
+        "league one", "league two",
+    ),
     "Spain": ("laliga", "la liga", "copa del rey"),
     "Italy": ("serie a", "serie b", "coppa italia"),
     "Germany": ("bundesliga", "dfb pokal"),
@@ -79,14 +82,41 @@ ALLOWED_COMPETITIONS: dict[str, tuple[str, ...]] = {
         "copa do brasil",
     ),
     "Argentina": ("liga profesional", "primera b nacional", "copa argentina"),
-    "Chile": ("liga de primera",),
+    "Chile": ("liga de primera", "liga de ascenso"),
     "Uruguay": ("primera division",),
-    "Colombia": ("primera a",),
+    # SofaScore names these "Liga DIMAYOR" / "Torneo DIMAYOR", never "Primera A",
+    # so the old pattern silently matched nothing and Colombia was never traded.
+    "Colombia": ("liga dimayor", "torneo dimayor", "primera a", "copa colombia"),
+    "Ecuador": ("ligapro serie a", "ligapro serie b"),
+    "Peru": ("liga 1",),
+    "Paraguay": ("division profesional",),
     "Mexico": ("liga mx",),
     "USA": ("major league soccer", "mls"),
-    "Japan": ("j1 league",),
-    "South Korea": ("k league 1",),
+    "Japan": ("j1 league", "j.league 2", "j2 league"),
+    "South Korea": ("k league 1", "k league 2"),
+    "China": ("chinese super league", "chinese league 1"),
+    "Egypt": ("egyptian premier league",),
+    "Iran": ("pro league", "persian gulf"),
+    "Kazakhstan": ("premier league",),
+    "Israel": ("ligat ha'al", "ligat haal", "premier league"),
+    "Poland": ("ekstraklasa",),
+    "Czech Republic": ("first league", "fortuna liga"),
+    "Croatia": ("hnl", "supersport hnl"),
+    "Serbia": ("super liga",),
+    "Romania": ("superliga", "liga 1"),
+    "Ukraine": ("premier league",),
+    "Russia": ("premier liga", "premier league"),
+    "Australia": ("a-league",),
+    "Saudi Arabia": ("saudi pro league", "pro league"),
+    "Qatar": ("stars league",),
+    "United Arab Emirates": ("pro league",),
+    "South Africa": ("premier division", "betway premiership"),
+    "Morocco": ("botola pro",),
+    "Algeria": ("ligue 1",),
+    "Tunisia": ("ligue 1",),
+    "Nigeria": ("npfl", "premier football league"),
     "Europe": ("champions league", "europa league", "conference league"),
+    "South America": ("copa libertadores", "copa sudamericana"),
 }
 
 # Applied after the allowlist. Any hit disqualifies the fixture outright.
@@ -173,11 +203,17 @@ def competition_tier(category: str, tournament: str) -> int:
             if any(p in tourn for p in patterns):
                 return 2
 
-    # 3. Direct tournament name checks
-    if any(k in tourn for k in ("champions league", "premier league", "serie a", "la liga", "laliga", "bundesliga", "ligue 1")):
+    # 3. Continental competitions, which have no single country category.
+    #
+    # Deliberately no fallback on bare league names. Matching "premier league"
+    # without its category ranked Kazakhstan, Egypt and Israel as elite — 35 of
+    # 47 Tier 1 fixtures on one card — pushing them ahead of the Championship
+    # and Brasileirão in the ticket. A competition earns its tier from the
+    # (country, name) pair above or it is Tier 3.
+    if any(k in tourn for k in ("champions league", "europa league", "conference league")):
         return 1
 
-    if any(k in tourn for k in ("eredivisie", "super lig", "süper lig", "primeira liga", "pro league", "primera division", "mls", "brasileirão", "brasileirao")):
+    if any(k in tourn for k in ("copa libertadores", "copa sudamericana")):
         return 2
 
     return 3

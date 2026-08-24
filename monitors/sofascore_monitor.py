@@ -74,7 +74,7 @@ class SofaScoreMonitor:
             self._playwright = await async_playwright().start()
         
         browser = await self._playwright.chromium.launch(
-            headless=self.settings.sofascore_headless,
+            headless=True,
             args=[
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
@@ -84,6 +84,9 @@ class SofaScoreMonitor:
                 "--disable-background-networking",
                 "--disable-default-apps",
                 "--disable-sync",
+                "--no-first-run",
+                "--renderer-process-limit=2",
+                "--js-flags=--max-old-space-size=256",
                 "--disable-blink-features=AutomationControlled",
             ],
         )

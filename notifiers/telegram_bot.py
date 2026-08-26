@@ -701,8 +701,10 @@ class TelegramNotifier:
                 ])
                 keyboard = InlineKeyboardMarkup(keyboard_rows)
             else:
-                # Default /predict: generate both Top 10 & Top 20 tickets
-                dual_res = await pipeline.run_dual_pipeline(raw_matches, auto_book=True)
+                # Default /predict: generate Top 10, Top 20 and the draw ladder
+                dual_res = await pipeline.run_dual_pipeline(
+                    raw_matches, auto_book=True, include_draws=True
+                )
                 text_response = PredictionBookingPipeline.format_telegram_dual_digest(dual_res, today_str)
                 keyboard_rows = []
                 links = []
@@ -982,7 +984,11 @@ class TelegramNotifier:
             from services.pipeline import PredictionBookingPipeline, convert_matches_to_raw_dicts
             raw_matches = convert_matches_to_raw_dicts(all_matches)
             pipeline = PredictionBookingPipeline(country_code="ng", headless=True)
-            dual_res = await pipeline.run_dual_pipeline(raw_matches, auto_book=True)
+            # include_draws adds the experimental draw ladder as a third ticket
+            # block, built from the same fixtures and forms as Top 10/20.
+            dual_res = await pipeline.run_dual_pipeline(
+                raw_matches, auto_book=True, include_draws=True
+            )
 
             if dual_res.tier_10.picks or dual_res.tier_20.picks:
                 predict_msg = PredictionBookingPipeline.format_telegram_dual_digest(dual_res, today_str)

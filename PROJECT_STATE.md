@@ -48,6 +48,55 @@ flowchart TD
   - **Double Chance (1X / X2)** ($>78\%$ probability floor)
 - **`format.py`**: Emits clean formatted text consumed by the booker (e.g. `Angers vs Lille - X2`).
 
+### 1b. Draw Track (`core/predictor/draws.py`, `tickets.py`, `draw_ledger.py`)
+
+A **parallel, unvalidated** screen for draws. Run with `python -m core.predictor <fixtures.json> --draws`.
+It shares the output contract (`Team A vs Team B - Draw` → 1X2 / outcome `2`) and the odds
+and booking path, but **none** of the main engine's floors, calibration or results.
+
+- **Why it is separate**: `screen.py` uses independent Poisson, which under-predicts draws.
+  Dixon-Coles corrects the four lowest score cells and lifts an even fixture from
+  27.0% → 30.3% (λ 1.25 each) or 29.9% → 33.5% (λ 1.05 each). Break-even on a
+  draw priced at 3.20 is 31.25%, so the correction *is* the strategy. The main
+  screener's floors bottom out at 0.50 and would reject every draw pick anyway.
+- **Ticket ladder** (`tickets.py`): ten draws is a screening target, not a ticket.
+  At 32%/leg a 5-fold lands ~1.2×/year (336x); a 10-fold lands once per **243 years**
+  (112,590x). Default `--ticket-shape 5,5` = two disjoint five-folds off the ten picks,
+  ~2.45 hits/year. Disjoint by default so one bad leg cannot kill every ticket.
+- **Payout cap**: at a ₦10m cap a 10-fold's maximum useful stake is **₦88.82**
+  (a 5-fold's is ₦29,802). Pass `--max-payout` to see where stake stops earning.
+- **`draw_ledger.py`**: appends every pick to `storage/draw_ledger.jsonl`. Hit rate
+  needs 400-500 graded picks to read; closing line value is readable at ~150, which
+  makes `closing_odds` the column worth capturing.
+- **`tools/closing_sweep.py`**: captures each pick's draw price ~15 min before kickoff.
+  **Run this daily — it is the fastest read on whether the edge is real** (CLV at
+  ~150 picks ≈ 2 weeks, vs ~7 weeks for hit rate). SportyBet publishes no historical
+  odds, so a price not taken before kickoff is gone permanently.
+  ```bash
+  python -m tools.closing_sweep            # one pass — suits cron every 10 min
+  python -m tools.closing_sweep --watch    # continuous, alongside the bot
+  ```
+  **SportyBet only — never touches SofaScore**, so it cannot contribute to the rate
+  limiting that blocked the local IP. Costs exactly one `factsCenter/event` call per
+  pick because `event_id` is stored at record time; without it each capture would need
+  a ~1029-event paginated re-scan (~130 calls/day instead of ~10).
+- **Daily digest integration**: `run_dual_pipeline(..., include_draws=True)` adds
+  **Ticket 3: Daily Draws** alongside Top 10 / Top 20 — three codes (the 10-fold plus
+  the two five-folds it splits into), each booked separately. Enabled at both Telegram
+  call sites (scheduled digest and `/predict`). It reuses the fixtures and forms the
+  dual pipeline already fetched, so it costs **no extra SofaScore traffic** — a second
+  fetch for identical data is what got the local IP throttled before. Defaults to
+  `False` on the method so the draw track stays opt-in for other callers.
+
+**Not yet validated — do not stake meaningfully until these are done:**
+1. `DEFAULT_RHO = -0.13` is the literature value, **not fitted on this repo's data**.
+   It produces the entire 3-4 point edge. Fit with `python -m tools.fit_rho matches.jsonl`
+   (needs historical λ + scorelines with `before_ts` set). Self-test: `--self-test`.
+2. Never run against a live card. Floors (0.28 probability / 0.24 conviction) are
+   estimates; `--draw-floor` and the printed rejection breakdown exist to tune them.
+3. `LEAGUE_DRAW_PRIOR` is deliberately empty — filling it from recollection rather
+   than measurement is what produced the `max(0.70, ...)` Over 1.5 bug.
+
 ### 2. SportyBet Automated Booking Engine (`services/sportybet_service.py` & `core/booker_engine.py`)
 - **Direct REST API Integration**: Calls `POST https://www.sportybet.com/api/{country}/orders/share` with structured payload:
   ```json

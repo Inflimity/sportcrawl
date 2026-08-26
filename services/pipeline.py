@@ -19,6 +19,7 @@ from core.predictor.enrich import fetch_team_forms
 from core.predictor.filter import FilterStats, Fixture, filter_fixtures
 from core.predictor.format import format_picks
 from core.predictor.screen import Pick, screen_fixtures
+from core.predictor.tickets import Ticket
 from services.sportybet_service import BookingResult
 from storage.database import DatabaseManager
 from storage.models import FootballMatch
@@ -59,16 +60,61 @@ class PipelineResult:
 
 
 @dataclass
+class DrawTicket:
+    """One booked draw accumulator: its legs, its price, and its code."""
+
+    ticket: "Ticket"
+    booking_result: Optional[BookingResult] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "label": self.ticket.label,
+            "legs": len(self.ticket.legs),
+            "combined_probability": round(self.ticket.combined_probability * 100, 4),
+            "combined_odds": (
+                round(self.ticket.combined_odds, 2) if self.ticket.combined_odds else None
+            ),
+            "expected_hits_per_year": round(self.ticket.expected_hits_per_year, 3),
+            "lines": self.ticket.lines,
+            "booking": self.booking_result.to_dict() if self.booking_result else None,
+        }
+
+
+@dataclass
+class DrawPipelineResult:
+    """
+    The daily draw ladder: a 10-fold plus two five-folds, each booked separately.
+
+    Kept apart from PipelineResult because the two tracks are not comparable.
+    The Top 10/20 picks run at 75-85% a leg; these run near 30%, so a shared
+    summary would invite reading one as evidence about the other.
+    """
+
+    picks: list[Pick]
+    tickets: list[DrawTicket]
+    screen_summary: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "picks_count": len(self.picks),
+            "screen_summary": self.screen_summary,
+            "tickets": [t.to_dict() for t in self.tickets],
+        }
+
+
+@dataclass
 class DualPipelineResult:
     tier_10: PipelineResult
     tier_20: PipelineResult
     filter_stats: FilterStats
+    draws: Optional[DrawPipelineResult] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "tier_10": self.tier_10.to_dict(),
             "tier_20": self.tier_20.to_dict(),
             "total_screened": self.filter_stats.total,
+            "draws": self.draws.to_dict() if self.draws else None,
         }
 
 
@@ -197,9 +243,14 @@ class PredictionBookingPipeline:
         raw_matches: list[dict[str, Any]],
         form_matches: int = 10,
         auto_book: bool = True,
+        include_draws: bool = False,
     ) -> DualPipelineResult:
         """
         Generate BOTH Top 10 Bankers and Top 20 Mega Accumulator tickets simultaneously.
+
+        ``include_draws`` adds the draw ladder as a third ticket set, built from
+        the same fixtures and forms so it costs no extra SofaScore traffic.
+        Defaults off: the draw track is unvalidated, so it stays opt-in.
         """
         logger.info("Running dual prediction pipeline (Top 10 & Top 20) with %d raw fixtures...", len(raw_matches))
         fixtures, stats = filter_fixtures(raw_matches, allow_unlisted=True)
@@ -256,7 +307,87 @@ class PredictionBookingPipeline:
             booking_result=book_res_20,
         )
 
-        return DualPipelineResult(tier_10=tier_10, tier_20=tier_20, filter_stats=stats)
+        draws = None
+        if include_draws:
+            # Reuses the fixtures and forms already fetched above. Screening
+            # draws from a second fetch would double the SofaScore load for
+            # identical data, and load is what got the local IP throttled.
+            draws = await self.run_draw_pipeline(fixtures, forms, auto_book=auto_book)
+
+        return DualPipelineResult(
+            tier_10=tier_10, tier_20=tier_20, filter_stats=stats, draws=draws
+        )
+
+    async def run_draw_pipeline(
+        self,
+        fixtures: list[Fixture],
+        forms: dict[int, Any],
+        auto_book: bool = True,
+        top_n: int = 10,
+        shape: tuple[int, ...] = (10, 5, 5),
+    ) -> DrawPipelineResult:
+        """
+        Screen draws and book the ladder, one code per ticket.
+
+        Takes already-enriched fixtures and forms rather than fetching its own,
+        so adding this to the daily digest costs no extra SofaScore traffic.
+
+        ``shape`` defaults to the 10-fold plus the two five-folds it splits
+        into. The five-folds are the ones with a realistic hit frequency —
+        roughly 1.2 a year each against the 10-fold's once per 243 years — and
+        they are disjoint, so a single bad leg cannot take out all three.
+
+        Every pick is written to the draw ledger whether or not it is booked.
+        Nothing about this track is validated yet: rho is unfitted and no draw
+        pick has ever been graded, so treat the codes as a sample being built,
+        not as a signal being acted on.
+        """
+        from core.predictor.draw_ledger import record_picks
+        from core.predictor.draws import DrawScreenStats, screen_draws
+        from core.predictor.odds import attach_odds
+        from core.predictor.tickets import build_ladder
+
+        screen_stats = DrawScreenStats()
+        picks = screen_draws(fixtures, forms, limit=top_n, stats=screen_stats)
+        logger.info(screen_stats.summary())
+
+        if not picks:
+            return DrawPipelineResult(
+                picks=[], tickets=[], screen_summary=screen_stats.summary()
+            )
+
+        # Per-leg prices, needed for the ticket odds and for the ledger's edge
+        # and closing-line columns. The booker's total_odds cannot supply these.
+        priced = await attach_odds(picks, service=self.booker.service)
+        record_picks(priced, ticket_label="daily-digest")
+
+        # The 10-fold uses every pick; the five-folds split the same ten, so
+        # overlap between tickets is intended here and disjointness is enforced
+        # only within the pair.
+        tickets: list[DrawTicket] = []
+        ladder = build_ladder(priced, shape=(shape[0],), disjoint=False)
+        ladder += build_ladder(priced, shape=tuple(shape[1:]), disjoint=True)
+
+        for ticket in ladder:
+            booking = None
+            if auto_book:
+                booking = await self.booker.book_predictions("\n".join(ticket.lines))
+                if booking and booking.success:
+                    logger.info(
+                        "Draw %s booked: %s (odds %s)",
+                        ticket.label,
+                        booking.booking_code,
+                        booking.total_odds,
+                    )
+                else:
+                    logger.warning("Draw %s failed to book", ticket.label)
+            tickets.append(DrawTicket(ticket=ticket, booking_result=booking))
+
+        return DrawPipelineResult(
+            picks=[p.pick for p in priced],
+            tickets=tickets,
+            screen_summary=screen_stats.summary(),
+        )
 
     @staticmethod
     def format_telegram_digest(result: PipelineResult, title: str = "🎯 Daily Top Banker Predictions") -> str:
@@ -333,4 +464,57 @@ class PredictionBookingPipeline:
         for idx, p in enumerate(dual_res.tier_20.picks, 1):
             lines.append(f"<b>{idx}.</b> {p.fixture.home_name} vs {p.fixture.away_name} ➔ <b>{p.selection}</b> <i>({p.market})</i>")
 
+        if dual_res.draws and dual_res.draws.tickets:
+            lines.append(PredictionBookingPipeline.format_telegram_draw_section(dual_res.draws))
+
         return "\n".join(lines)
+
+    @staticmethod
+    def format_telegram_draw_section(draws: DrawPipelineResult) -> str:
+        """
+        Format the draw ladder as a third ticket block.
+
+        Labelled as unvalidated on purpose. These sit in the same message as
+        picks running at 75-85% a leg, and a reader scanning codes has no way
+        to tell that these run near 30% unless the message says so.
+        """
+        lines = [
+            "\n━━━━━━━━━━━━━━━━━━━━",
+            "🎲 <b>TICKET 3: DAILY DRAWS</b> <i>(experimental — unvalidated)</i>",
+        ]
+
+        for entry in draws.tickets:
+            ticket = entry.ticket
+            odds = ticket.combined_odds
+            lines.append(
+                f"\n<b>{ticket.label}</b> — {ticket.size} legs"
+                + (f" @ <b>{odds:,.0f}x</b>" if odds else "")
+            )
+            if entry.booking_result and entry.booking_result.success:
+                lines.append(
+                    f"🎟️ <b>Code:</b> <code>{entry.booking_result.booking_code}</code> "
+                    f"<i>(tap to copy)</i>"
+                )
+            else:
+                lines.append("⚠️ <i>Not booked</i>")
+            lines.append(
+                f"📉 Hits ~<b>{ticket.expected_hits_per_year:.2f}×/year</b> "
+                f"at one a day (1 in {ticket.one_in:,.0f})"
+                if ticket.one_in
+                else ""
+            )
+
+        lines.append("\n<b>📋 Draw Selections:</b>")
+        for idx, p in enumerate(draws.picks, 1):
+            lines.append(
+                f"<b>{idx}.</b> {p.fixture.home_name} vs {p.fixture.away_name} "
+                f"➔ <b>Draw</b> <i>({round(p.probability * 100)}%)</i>"
+            )
+
+        lines.append(
+            "\n⚠️ <i>Draws hit ~30%, not 80% — 7 losses in 10 is the expected "
+            "outcome, not a bad run. Model is unfitted and ungraded; stake as a "
+            "lottery ticket while the sample builds.</i>"
+        )
+
+        return "\n".join(line for line in lines if line != "")

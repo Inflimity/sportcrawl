@@ -52,6 +52,11 @@ class PricedPick:
     pick: Pick
     odds: Optional[float] = None
     error: Optional[str] = None
+    # SportyBet's id for the matched fixture. Kept because re-finding it later
+    # costs a full paginated sweep of ~1029 events, and anything that wants to
+    # re-price this selection — a closing-line capture above all — needs only
+    # this id to go straight to factsCenter/event.
+    event_id: Optional[str] = None
 
     @property
     def implied_probability(self) -> Optional[float]:
@@ -146,7 +151,9 @@ async def attach_odds(
 
         resolved = resolve_market_selection(bet, markets)
         if not resolved:
-            priced.append(PricedPick(pick=pick, error="Market not active on SportyBet"))
+            priced.append(
+                PricedPick(pick=pick, event_id=event_id, error="Market not active on SportyBet")
+            )
             continue
 
         try:
@@ -158,6 +165,7 @@ async def attach_odds(
             PricedPick(
                 pick=pick,
                 odds=odds,
+                event_id=event_id,
                 error=None if odds else "Market resolved but carried no price",
             )
         )

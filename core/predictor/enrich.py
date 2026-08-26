@@ -24,7 +24,6 @@ from typing import Any, Optional
 from config.settings import Settings
 from core.predictor.filter import Fixture
 from core.predictor.leagues import is_form_eligible
-from monitors.sofascore_monitor import SofaScoreMonitor
 
 logger = logging.getLogger("SportCrawl.Predictor.Enrich")
 
@@ -226,6 +225,8 @@ async def fetch_team_forms(
 
     team_ids = list(names)
     logger.info("Fetching recent form for %d teams across %d fixtures...", len(team_ids), len(fixtures))
+
+    from monitors.sofascore_monitor import SofaScoreMonitor
 
     monitor = SofaScoreMonitor(settings or Settings())
     browser, _context, page = await monitor._create_browser_context()

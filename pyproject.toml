@@ -33,6 +33,10 @@ sportcrawl = "main:cli_entry"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
+[tool.setuptools.packages.find]
+include = ["api*", "core*", "config*", "storage*", "monitors*", "services*", "notifiers*", "tools*"]
+
+
 [build-system]
 requires = ["setuptools>=69.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"

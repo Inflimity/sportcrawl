@@ -200,3 +200,23 @@ tmux attach -t sportcrawl
 4. **Accented Character & Alias Normalization**:
    - *Problem*: Turkish/Spanish characters (e.g. *Eyüpspor* vs *Eyupspor*) failed string matching.
    - *Solution*: Added fuzzy Levenshtein ratio matching (`team_similarity >= 0.5`) across all mapping paths.
+
+---
+
+## 🔮 Future Roadmap & Planned Concepts
+
+### 🧠 AI Second Opinion / Qualitative Validation Layer (Hybrid Quant + LLM)
+
+**Concept**: Introduce an LLM validation step (e.g. Gemini 2.0 Flash / OpenAI / Claude) after statistical Poisson / Dixon-Coles screening and before SportyBet booking.
+
+- **Rationale**:
+  - The statistical model handles pure historical goal distributions, Poisson $xG$, and Dixon-Coles draw probabilities, but is blind to qualitative real-world factors:
+    1. **Motivation & Dead Rubbers** (e.g., teams already qualified/relegated fielding reserves).
+    2. **Fixture Congestion & Rest Cycles** (3 matches in 7 days, impending Champions League ties).
+    3. **Derby Dynamics** (unpredictable low-scoring card-heavy matches).
+    4. **Tactical Mismatches** (e.g., high-possession favorite vs extreme 10-man low block).
+- **Proposed Workflow**:
+  1. Statistical screener outputs Top 20-30 high-conviction candidate picks with computed metrics ($xG$, form, probabilities, odds).
+  2. Batched structured prompt sent to LLM returning strict Pydantic JSON: `decision: APPROVE | REJECT | DOWNGRADE`, `confidence_rating: 1-10`, `tactical_rationale: str`, `risk_flags: list[str]`.
+  3. Filtered picks forwarded to `SportyBetService` for booking.
+  4. Telegram digest enriched with short 1-line tactical rationale per pick explaining *why* the AI supports the mathematical bet.

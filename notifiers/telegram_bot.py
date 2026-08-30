@@ -703,7 +703,7 @@ class TelegramNotifier:
             else:
                 # Default /predict: generate Top 10, Top 20 and the draw ladder
                 dual_res = await pipeline.run_dual_pipeline(
-                    raw_matches, auto_book=True, include_draws=True
+                    raw_matches, auto_book=True, include_draws=True, include_two_odds=True
                 )
                 text_response = PredictionBookingPipeline.format_telegram_dual_digest(dual_res, today_str)
                 keyboard_rows = []
@@ -712,6 +712,8 @@ class TelegramNotifier:
                     links.append(InlineKeyboardButton("🔗 Top 10 Betslip", url=dual_res.tier_10.booking_result.share_url))
                 if dual_res.tier_20.booking_result and dual_res.tier_20.booking_result.success and dual_res.tier_20.booking_result.share_url:
                     links.append(InlineKeyboardButton("🔗 Top 20 Betslip", url=dual_res.tier_20.booking_result.share_url))
+                if dual_res.two_odds and dual_res.two_odds.booking_result and dual_res.two_odds.booking_result.success and dual_res.two_odds.booking_result.share_url:
+                    links.append(InlineKeyboardButton("💰 2 Odds Betslip", url=dual_res.two_odds.booking_result.share_url))
                 if links:
                     keyboard_rows.append(links)
                 keyboard_rows.append([
@@ -987,7 +989,7 @@ class TelegramNotifier:
             # include_draws adds the experimental draw ladder as a third ticket
             # block, built from the same fixtures and forms as Top 10/20.
             dual_res = await pipeline.run_dual_pipeline(
-                raw_matches, auto_book=True, include_draws=True
+                raw_matches, auto_book=True, include_draws=True, include_two_odds=True
             )
 
             if dual_res.tier_10.picks or dual_res.tier_20.picks:
@@ -997,6 +999,8 @@ class TelegramNotifier:
                     links.append(InlineKeyboardButton("🔗 Top 10 Betslip", url=dual_res.tier_10.booking_result.share_url))
                 if dual_res.tier_20.booking_result and dual_res.tier_20.booking_result.success and dual_res.tier_20.booking_result.share_url:
                     links.append(InlineKeyboardButton("🔗 Top 20 Betslip", url=dual_res.tier_20.booking_result.share_url))
+                if dual_res.two_odds and dual_res.two_odds.booking_result and dual_res.two_odds.booking_result.success and dual_res.two_odds.booking_result.share_url:
+                    links.append(InlineKeyboardButton("💰 2 Odds Betslip", url=dual_res.two_odds.booking_result.share_url))
                 pred_kb = InlineKeyboardMarkup([links]) if links else None
 
                 await self._bot.send_message(

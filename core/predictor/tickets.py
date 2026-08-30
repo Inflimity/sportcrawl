@@ -254,3 +254,63 @@ def format_ladder(tickets: list[Ticket], max_payout: Optional[float] = DEFAULT_M
         )
 
     return "\n".join(lines)
+
+
+def build_capped_ticket(
+    priced: Sequence[PricedPick],
+    max_combined_odds: float = 2.0,
+    max_legs: int = 3,
+    label: str = "2 Odds",
+) -> Optional[Ticket]:
+    """
+    The strongest short accumulator that stays under a price cap.
+
+    Legs are taken highest-probability first and added only while the running
+    product stays at or under ``max_combined_odds``. A leg too expensive to fit
+    is SKIPPED rather than ending the search: stopping at the first one that
+    does not fit would end most tickets at a single leg, because the very
+    shortest prices are not always the most probable selections.
+
+    Returns ``None`` if nothing is priced — an unpriced ticket has no combined
+    odds, so a cap could not be honoured and claiming otherwise would be a lie
+    about the one property the caller asked for.
+    """
+    pool = [p for p in priced if p.odds and p.odds > 1.0]
+    if not pool:
+        logger.warning("No priced picks available; no capped ticket built.")
+        return None
+
+    pool.sort(key=lambda p: p.pick.probability, reverse=True)
+
+    legs: list[Pick] = []
+    leg_odds: list[Optional[float]] = []
+    seen_fixtures: set[tuple[str, str]] = set()
+    combined = 1.0
+
+    for cand in pool:
+        if len(legs) >= max_legs:
+            break
+        # One leg per fixture. screen_fixtures already enforces this upstream,
+        # but two selections on the same match are correlated and a bookmaker
+        # will not accept them on one slip, so do not depend on it.
+        key = (cand.pick.fixture.home_name, cand.pick.fixture.away_name)
+        if key in seen_fixtures:
+            continue
+        if combined * cand.odds > max_combined_odds:
+            continue
+        legs.append(cand.pick)
+        leg_odds.append(cand.odds)
+        seen_fixtures.add(key)
+        combined *= cand.odds
+
+    if not legs:
+        logger.warning(
+            "No leg priced at or under %.2f; no capped ticket built.", max_combined_odds
+        )
+        return None
+
+    logger.info(
+        "Capped ticket: %d leg(s) at %.2f combined (cap %.2f).",
+        len(legs), combined, max_combined_odds,
+    )
+    return Ticket(legs=legs, leg_odds=leg_odds, label=label)

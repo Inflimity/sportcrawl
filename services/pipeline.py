@@ -103,11 +103,48 @@ class DrawPipelineResult:
 
 
 @dataclass
+class TwoOddsResult:
+    """
+    The short banker: at most three legs, priced to land at or under 2.00.
+
+    Separate from the Top 10/20 tickets because it answers a different
+    question. Those maximise conviction and let the price fall where it may;
+    this one fixes the price first and takes the best legs that fit under it.
+    """
+
+    ticket: Optional["Ticket"] = None
+    booking_result: Optional[BookingResult] = None
+    max_combined_odds: float = 2.0
+    source: str = "h2h"
+
+    def to_dict(self) -> dict[str, Any]:
+        if not self.ticket:
+            return {"built": False, "max_combined_odds": self.max_combined_odds,
+                    "source": self.source}
+        return {
+            "built": True,
+            "max_combined_odds": self.max_combined_odds,
+            "source": self.source,
+            "legs": len(self.ticket.legs),
+            "combined_probability": round(self.ticket.combined_probability * 100, 2),
+            "combined_odds": (
+                round(self.ticket.combined_odds, 2) if self.ticket.combined_odds else None
+            ),
+            "expected_value": (
+                round(self.ticket.expected_value, 3) if self.ticket.expected_value else None
+            ),
+            "lines": self.ticket.lines,
+            "booking": self.booking_result.to_dict() if self.booking_result else None,
+        }
+
+
+@dataclass
 class DualPipelineResult:
     tier_10: PipelineResult
     tier_20: PipelineResult
     filter_stats: FilterStats
     draws: Optional[DrawPipelineResult] = None
+    two_odds: Optional[TwoOddsResult] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,6 +152,7 @@ class DualPipelineResult:
             "tier_20": self.tier_20.to_dict(),
             "total_screened": self.filter_stats.total,
             "draws": self.draws.to_dict() if self.draws else None,
+            "two_odds": self.two_odds.to_dict() if self.two_odds else None,
         }
 
 
@@ -244,6 +282,10 @@ class PredictionBookingPipeline:
         form_matches: int = 10,
         auto_book: bool = True,
         include_draws: bool = False,
+        include_two_odds: bool = False,
+        two_odds_cap: float = 2.0,
+        two_odds_max_legs: int = 3,
+        two_odds_source: str = "h2h",
     ) -> DualPipelineResult:
         """
         Generate BOTH Top 10 Bankers and Top 20 Mega Accumulator tickets simultaneously.
@@ -251,6 +293,11 @@ class PredictionBookingPipeline:
         ``include_draws`` adds the draw ladder as a third ticket set, built from
         the same fixtures and forms so it costs no extra SofaScore traffic.
         Defaults off: the draw track is unvalidated, so it stays opt-in.
+
+        ``include_two_odds`` adds a fourth ticket: at most ``two_odds_max_legs``
+        legs whose prices multiply to at most ``two_odds_cap``. It reuses the
+        picks already screened above, so it costs no extra SofaScore traffic
+        either — only the SportyBet prices needed to honour the cap.
         """
         logger.info("Running dual prediction pipeline (Top 10 & Top 20) with %d raw fixtures...", len(raw_matches))
         fixtures, stats = filter_fixtures(raw_matches, allow_unlisted=True)
@@ -307,6 +354,17 @@ class PredictionBookingPipeline:
             booking_result=book_res_20,
         )
 
+        two_odds = None
+        if include_two_odds:
+            two_odds = await self.build_two_odds_ticket(
+                all_screened,
+                fixtures=fixtures,
+                auto_book=auto_book,
+                cap=two_odds_cap,
+                max_legs=two_odds_max_legs,
+                source=two_odds_source,
+            )
+
         draws = None
         if include_draws:
             # Reuses the fixtures and forms already fetched above. Screening
@@ -315,8 +373,82 @@ class PredictionBookingPipeline:
             draws = await self.run_draw_pipeline(fixtures, forms, auto_book=auto_book)
 
         return DualPipelineResult(
-            tier_10=tier_10, tier_20=tier_20, filter_stats=stats, draws=draws
+            tier_10=tier_10, tier_20=tier_20, filter_stats=stats,
+            draws=draws, two_odds=two_odds,
         )
+
+    async def build_two_odds_ticket(
+        self,
+        screened: list[Pick],
+        fixtures: Optional[list[Fixture]] = None,
+        auto_book: bool = True,
+        cap: float = 2.0,
+        max_legs: int = 3,
+        price_depth: int = 10,
+        source: str = "h2h",
+        h2h_depth: int = 40,
+    ) -> "TwoOddsResult":
+        """
+        Build the short banker: the best legs that multiply to at most ``cap``.
+
+        ``source`` decides where the candidate picks come from:
+
+        ``"h2h"``   reads only what these two teams have done to each other and
+                    takes the best of Home / Away / Draw / GG / Over 2.5. This
+                    is the hand method the ticket was asked to reproduce.
+        ``"model"`` reuses the Poisson screen that feeds Top 10/20.
+
+        H2H is fetched for at most ``h2h_depth`` fixtures. Every one is a
+        SofaScore request and sustained load is what got the IP throttled
+        before, so this is a deliberate ceiling rather than the whole card.
+
+        Only the top ``price_depth`` candidates are priced: a ticket capped at
+        2.00 across three legs needs legs near 1.25, and those sit at the top.
+        """
+        from core.predictor.odds import attach_odds
+        from core.predictor.tickets import build_capped_ticket
+
+        result = TwoOddsResult(max_combined_odds=cap, source=source)
+
+        candidates = screened
+        if source == "h2h":
+            if not fixtures:
+                logger.warning("H2H source requested without fixtures; using the model screen.")
+            else:
+                from core.predictor.h2h import fetch_h2h, screen_h2h
+
+                records = await fetch_h2h(fixtures[:h2h_depth])
+                h2h_picks = screen_h2h(records)
+                if h2h_picks:
+                    candidates = h2h_picks
+                    result.source = "h2h"
+                else:
+                    # Not an error: a card of first-ever meetings has no record
+                    # to read. Say so, and fall back rather than emit nothing.
+                    logger.info(
+                        "No fixture had %d+ previous meetings; falling back to the model screen.",
+                        4,
+                    )
+                    result.source = "model (h2h had no qualifying record)"
+
+        if not candidates:
+            return result
+
+        # Reuses the booker's service, so the paginated event sweep it already
+        # performed is not repeated.
+        priced = await attach_odds(candidates[:price_depth], service=self.booker.service)
+        ticket = build_capped_ticket(
+            priced, max_combined_odds=cap, max_legs=max_legs, label=f"{cap:g} Odds Banker"
+        )
+        if not ticket:
+            logger.info("No ticket could be built under a %.2f cap.", cap)
+            return result
+
+        result.ticket = ticket
+        if auto_book:
+            result.booking_result = await self.booker.book_predictions("\n".join(ticket.lines))
+
+        return result
 
     async def run_draw_pipeline(
         self,
@@ -464,8 +596,62 @@ class PredictionBookingPipeline:
         for idx, p in enumerate(dual_res.tier_20.picks, 1):
             lines.append(f"<b>{idx}.</b> {p.fixture.home_name} vs {p.fixture.away_name} ➔ <b>{p.selection}</b> <i>({p.market})</i>")
 
+        if dual_res.two_odds and dual_res.two_odds.ticket:
+            lines.append(PredictionBookingPipeline.format_telegram_two_odds_section(dual_res.two_odds))
+
         if dual_res.draws and dual_res.draws.tickets:
             lines.append(PredictionBookingPipeline.format_telegram_draw_section(dual_res.draws))
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def format_telegram_two_odds_section(two_odds: "TwoOddsResult") -> str:
+        """
+        Format the capped banker as its own ticket block.
+
+        Shows the combined odds and the joint probability together, because
+        either one alone is misleading: 1.83 looks dull without the ~68% beside
+        it, and 68% looks poor without the price it was bought at.
+        """
+        ticket = two_odds.ticket
+        if not ticket:
+            return ""
+
+        odds = ticket.combined_odds
+        header = (
+            f"\n━━━━━━━━━━━━━━━━━━━━"
+            f"\n💰 <b>TICKET 4: {two_odds.max_combined_odds:g} ODDS BANKER</b>"
+            f" <i>(max {len(ticket.legs)} legs, capped)</i>"
+        )
+        lines = [header]
+
+        if two_odds.booking_result and two_odds.booking_result.success:
+            b = two_odds.booking_result
+            lines.append(
+                f"🎟️ <b>SportyBet Code:</b> <code>{b.booking_code}</code> <i>(tap to copy)</i>"
+            )
+
+        lines.append(
+            f"📊 <b>Total Odds:</b> <b>{odds:.2f}</b>" if odds else "📊 <b>Total Odds:</b> —"
+        )
+        lines.append(
+            f"🎯 <b>Joint probability:</b> {ticket.combined_probability:.0%}"
+            f" | ⚽ <b>{ticket.size} Games</b>"
+        )
+        if two_odds.source.startswith("h2h"):
+            lines.append("📈 <i>Picked on head-to-head record</i>")
+        lines.append("")
+
+        for idx, (leg, leg_odd) in enumerate(zip(ticket.legs, ticket.leg_odds), 1):
+            price = f" @ {leg_odd:.2f}" if leg_odd else ""
+            lines.append(
+                f"<b>{idx}.</b> {leg.fixture.home_name} vs {leg.fixture.away_name}"
+                f" ➔ <b>{leg.selection}</b> <i>({round(leg.probability * 100)}%{price})</i>"
+            )
+            # The record itself, not just the number derived from it. A 9/12 and
+            # a 4/4 can shrink to the same probability and are not the same bet.
+            if leg.rationale:
+                lines.append(f"    <i>{leg.rationale}</i>")
 
         return "\n".join(lines)
 

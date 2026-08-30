@@ -224,6 +224,10 @@ class TelegramNotifier:
         self._admin_chat_id = admin_chat_id
         self._db = db
         self._monitor = monitor
+        # Read once here rather than per digest: the ticket-4 flags are read on
+        # every scheduled run, and BaseSettings re-parses the .env each call.
+        from config.settings import Settings
+        self._settings = Settings()
 
         request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
         self._bot = Bot(token=bot_token, request=request)
@@ -703,7 +707,11 @@ class TelegramNotifier:
             else:
                 # Default /predict: generate Top 10, Top 20 and the draw ladder
                 dual_res = await pipeline.run_dual_pipeline(
-                    raw_matches, auto_book=True, include_draws=True, include_two_odds=True
+                    raw_matches, auto_book=True, include_draws=True,
+                    include_two_odds=self._settings.two_odds_enabled,
+                    two_odds_cap=self._settings.two_odds_cap,
+                    two_odds_max_legs=self._settings.two_odds_max_legs,
+                    two_odds_source=self._settings.two_odds_source
                 )
                 text_response = PredictionBookingPipeline.format_telegram_dual_digest(dual_res, today_str)
                 keyboard_rows = []
@@ -989,7 +997,11 @@ class TelegramNotifier:
             # include_draws adds the experimental draw ladder as a third ticket
             # block, built from the same fixtures and forms as Top 10/20.
             dual_res = await pipeline.run_dual_pipeline(
-                raw_matches, auto_book=True, include_draws=True, include_two_odds=True
+                raw_matches, auto_book=True, include_draws=True,
+                    include_two_odds=self._settings.two_odds_enabled,
+                    two_odds_cap=self._settings.two_odds_cap,
+                    two_odds_max_legs=self._settings.two_odds_max_legs,
+                    two_odds_source=self._settings.two_odds_source
             )
 
             if dual_res.tier_10.picks or dual_res.tier_20.picks:

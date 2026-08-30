@@ -56,6 +56,13 @@ class TeamForm:
 
     recent_results: str = ""     # e.g. "WWDLW", most recent first
 
+    # The same team over a shorter window, built from the same fetched events
+    # so it costs nothing extra. Populated only when fetch_team_forms is asked
+    # for one. Ten matches is a steadier base for a goals model; five is what a
+    # person reads off the form guide, and the two disagree often enough that
+    # keeping both is worth a field.
+    short: Optional["TeamForm"] = None
+
     @property
     def is_reliable(self) -> bool:
         return self.matches_used >= MIN_MATCHES_FOR_CONFIDENCE
@@ -80,6 +87,13 @@ class TeamForm:
         if not self.recent_results:
             return 0.0
         return sum(r == "W" for r in self.recent_results) / len(self.recent_results)
+
+    @property
+    def draw_rate(self) -> float:
+        """Share of recent matches drawn."""
+        if not self.recent_results:
+            return 0.0
+        return sum(r == "D" for r in self.recent_results) / len(self.recent_results)
 
     @property
     def loss_rate(self) -> float:
@@ -198,6 +212,7 @@ def _build_form(
 async def fetch_team_forms(
     fixtures: list[Fixture],
     form_matches: int = 10,
+    short_window: Optional[int] = None,
     batch_size: int = 8,
     settings: Optional[Settings] = None,
     before_ts: Optional[int] = None,
@@ -339,7 +354,11 @@ async def fetch_team_forms(
             logger.warning("No form history retrieved for %s (id=%s)", name, team_id)
             forms[team_id] = TeamForm(team_id=team_id, name=name)
             continue
-        forms[team_id] = _build_form(team_id, name, events, form_matches, before_ts=before_ts)
+        form = _build_form(team_id, name, events, form_matches, before_ts=before_ts)
+        if short_window:
+            # Same events, shorter cut. No extra request.
+            form.short = _build_form(team_id, name, events, short_window, before_ts=before_ts)
+        forms[team_id] = form
 
     reliable = sum(1 for f in forms.values() if f.is_reliable)
     logger.info("Built form for %d teams (%d with a usable sample)", len(forms), reliable)

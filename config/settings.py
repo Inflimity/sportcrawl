@@ -39,15 +39,14 @@ class Settings(BaseSettings):
     app_timezone: str = "Africa/Lagos"  # West Africa Time (WAT / UTC+1) - Nigerian Time
 
     # ── Ticket 4: the capped "2 odds" banker ────────────────────────────
-    # On by default: this is a wanted part of the daily digest, not an
-    # experiment. Note it adds one SofaScore head-to-head request per fixture
-    # (capped at two_odds_h2h_depth) to every run, on top of the existing form
-    # fetches. Set TWO_ODDS_ENABLED=false to switch it off without a deploy.
+    # On by default. Costs NO extra SofaScore requests: the short form window
+    # is cut from the events already fetched for Top 10/20.
+    # Set TWO_ODDS_ENABLED=false to switch it off without a deploy.
     two_odds_enabled: bool = True
     two_odds_cap: float = 2.0            # max combined odds for the ticket
     two_odds_max_legs: int = 3
-    two_odds_source: str = "h2h"         # "h2h" (head-to-head record) or "model"
-    two_odds_h2h_depth: int = 40         # fixtures to fetch H2H for, per run
+    two_odds_source: str = "form"        # "form" (recent form guide) or "model"
+    two_odds_short_window: int = 5       # matches per side the form read uses
 
     # ── Top / Featured Leagues & Competitions ────────────────────────────
     # Matches in these tournaments are prioritized in digests & alerts

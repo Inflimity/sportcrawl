@@ -115,7 +115,7 @@ class TwoOddsResult:
     ticket: Optional["Ticket"] = None
     booking_result: Optional[BookingResult] = None
     max_combined_odds: float = 2.0
-    source: str = "h2h"
+    source: str = "form"
 
     def to_dict(self) -> dict[str, Any]:
         if not self.ticket:
@@ -285,7 +285,8 @@ class PredictionBookingPipeline:
         include_two_odds: bool = False,
         two_odds_cap: float = 2.0,
         two_odds_max_legs: int = 3,
-        two_odds_source: str = "h2h",
+        two_odds_source: str = "form",
+        two_odds_short_window: int = 5,
     ) -> DualPipelineResult:
         """
         Generate BOTH Top 10 Bankers and Top 20 Mega Accumulator tickets simultaneously.
@@ -317,8 +318,11 @@ class PredictionBookingPipeline:
                 if bookable_fixtures:
                     fixtures = bookable_fixtures
 
-        # Fetch form once for all matches
-        forms = await fetch_team_forms(fixtures, form_matches=form_matches)
+        # Fetch form once for all matches. short_window builds the five-match
+        # cut from the same events, for the form-guide ticket, at no extra cost.
+        forms = await fetch_team_forms(
+            fixtures, form_matches=form_matches, short_window=two_odds_short_window
+        )
 
         # Screen up to 50 picks so Top 20 always has a full 20-match card
         all_screened = screen_fixtures(fixtures=fixtures, forms=forms, limit=50, max_per_fixture=1)
@@ -359,6 +363,7 @@ class PredictionBookingPipeline:
             two_odds = await self.build_two_odds_ticket(
                 all_screened,
                 fixtures=fixtures,
+                forms=forms,
                 auto_book=auto_book,
                 cap=two_odds_cap,
                 max_legs=two_odds_max_legs,
@@ -385,22 +390,20 @@ class PredictionBookingPipeline:
         cap: float = 2.0,
         max_legs: int = 3,
         price_depth: int = 10,
-        source: str = "h2h",
-        h2h_depth: int = 40,
+        source: str = "form",
+        forms: Optional[dict] = None,
     ) -> "TwoOddsResult":
         """
         Build the short banker: the best legs that multiply to at most ``cap``.
 
         ``source`` decides where the candidate picks come from:
 
-        ``"h2h"``   reads only what these two teams have done to each other and
+        ``"form"``  reads both sides' last few results off the form guide and
                     takes the best of Home / Away / Draw / GG / Over 2.5. This
-                    is the hand method the ticket was asked to reproduce.
+                    is the hand method the ticket was asked to reproduce, and
+                    it costs no extra requests — the short window is cut from
+                    the events already fetched for Top 10/20.
         ``"model"`` reuses the Poisson screen that feeds Top 10/20.
-
-        H2H is fetched for at most ``h2h_depth`` fixtures. Every one is a
-        SofaScore request and sustained load is what got the IP throttled
-        before, so this is a deliberate ceiling rather than the whole card.
 
         Only the top ``price_depth`` candidates are priced: a ticket capped at
         2.00 across three legs needs legs near 1.25, and those sit at the top.
@@ -411,25 +414,21 @@ class PredictionBookingPipeline:
         result = TwoOddsResult(max_combined_odds=cap, source=source)
 
         candidates = screened
-        if source == "h2h":
-            if not fixtures:
-                logger.warning("H2H source requested without fixtures; using the model screen.")
+        if source == "form":
+            if not fixtures or not forms:
+                logger.warning("Form source requested without fixtures/forms; using the model screen.")
+                result.source = "model (form inputs unavailable)"
             else:
-                from core.predictor.h2h import fetch_h2h, screen_h2h
+                from core.predictor.form_pick import screen_form
 
-                records = await fetch_h2h(fixtures[:h2h_depth])
-                h2h_picks = screen_h2h(records)
-                if h2h_picks:
-                    candidates = h2h_picks
-                    result.source = "h2h"
+                form_picks = screen_form(fixtures, forms, prefer_short=True)
+                if form_picks:
+                    candidates = form_picks
                 else:
-                    # Not an error: a card of first-ever meetings has no record
-                    # to read. Say so, and fall back rather than emit nothing.
-                    logger.info(
-                        "No fixture had %d+ previous meetings; falling back to the model screen.",
-                        4,
-                    )
-                    result.source = "model (h2h had no qualifying record)"
+                    # Every side too new to read. Say so and fall back rather
+                    # than emit nothing.
+                    logger.info("No fixture had enough form; falling back to the model screen.")
+                    result.source = "model (form too thin)"
 
         if not candidates:
             return result
@@ -638,8 +637,8 @@ class PredictionBookingPipeline:
             f"🎯 <b>Joint probability:</b> {ticket.combined_probability:.0%}"
             f" | ⚽ <b>{ticket.size} Games</b>"
         )
-        if two_odds.source.startswith("h2h"):
-            lines.append("📈 <i>Picked on head-to-head record</i>")
+        if two_odds.source.startswith("form"):
+            lines.append("📈 <i>Picked on both sides' recent form</i>")
         lines.append("")
 
         for idx, (leg, leg_odd) in enumerate(zip(ticket.legs, ticket.leg_odds), 1):

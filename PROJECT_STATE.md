@@ -161,28 +161,16 @@ and booking path, but **none** of the main engine's floors, calibration or resul
 ssh root@<YOUR_VPS_IP>
 ```
 
-### Step 2: Update Code & Dependencies
+### Step 2: Deploy New Work
+For standard code updates, you just need to pull the code and restart the service:
 ```bash
-cd /path/to/sportcrawl
+cd /opt/sportcrawl
 git pull origin main
-source .venv/bin/activate
-pip install -r requirements.txt
-playwright install chromium --with-deps
-```
-
-### Step 3: Restart Service
-```bash
-# If using systemd:
 sudo systemctl restart sportcrawl
 sudo journalctl -u sportcrawl -f
-
-# If using PM2:
-pm2 restart sportcrawl
-
-# If using tmux:
-tmux attach -t sportcrawl
-# (Ctrl+C to stop, then run 'python main.py', then Ctrl+B then D to detach)
 ```
+
+*(Note: If you ever add new Python packages to `requirements.txt`, you will need to run `source .venv/bin/activate` and `pip install -r requirements.txt` before restarting).*
 
 ---
 

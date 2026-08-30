@@ -711,7 +711,8 @@ class TelegramNotifier:
                     include_two_odds=self._settings.two_odds_enabled,
                     two_odds_cap=self._settings.two_odds_cap,
                     two_odds_max_legs=self._settings.two_odds_max_legs,
-                    two_odds_source=self._settings.two_odds_source
+                    two_odds_source=self._settings.two_odds_source,
+                    two_odds_short_window=self._settings.two_odds_short_window
                 )
                 text_response = PredictionBookingPipeline.format_telegram_dual_digest(dual_res, today_str)
                 keyboard_rows = []
@@ -1001,7 +1002,8 @@ class TelegramNotifier:
                     include_two_odds=self._settings.two_odds_enabled,
                     two_odds_cap=self._settings.two_odds_cap,
                     two_odds_max_legs=self._settings.two_odds_max_legs,
-                    two_odds_source=self._settings.two_odds_source
+                    two_odds_source=self._settings.two_odds_source,
+                    two_odds_short_window=self._settings.two_odds_short_window
             )
 
             if dual_res.tier_10.picks or dual_res.tier_20.picks:

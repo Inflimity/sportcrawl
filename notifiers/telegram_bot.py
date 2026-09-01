@@ -647,18 +647,35 @@ class TelegramNotifier:
             today_str = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d")
             raw_matches = []
 
-            # 1. Fetch from DB or live monitor
+            # 1. Re-scrape first, then read the DB back.
+            #
+            # This used to prefer the stored card whenever the DB held anything
+            # for today, and only scrape when it held nothing. The stored card
+            # goes stale: the upcoming-fixtures sweep does not revisit a match
+            # once it has kicked off, so its status_type stays "notstarted"
+            # long after full time and a 21:00 /predict was screening a 15:00
+            # game. filter_fixtures now drops those on kickoff time, but a
+            # stale card also *misses* fixtures added since the last poll, and
+            # no downstream filter can recover those. So refresh here.
+            if self._monitor:
+                try:
+                    scraped = await self._monitor.fetch_today_matches(today_str)
+                    if self._db and scraped:
+                        for m in scraped:
+                            await self._db.upsert_match(m, is_featured=m.get("is_featured", False))
+                    if not self._db:
+                        raw_matches = scraped
+                except Exception as e:
+                    # A failed refresh is not a failed prediction — fall through
+                    # to whatever the DB holds and let the kickoff cutoff keep
+                    # played fixtures out.
+                    logger.warning("Fixture refresh before /predict failed: %s", e)
+
             if self._db:
                 db_matches = await self._db.get_matches_for_date(today_str)
                 if db_matches:
                     from services.pipeline import convert_matches_to_raw_dicts
                     raw_matches = convert_matches_to_raw_dicts(db_matches)
-
-            if not raw_matches and self._monitor:
-                raw_matches = await self._monitor.fetch_today_matches(today_str)
-                if self._db and raw_matches:
-                    for m in raw_matches:
-                        await self._db.upsert_match(m, is_featured=m.get("is_featured", False))
 
             if not raw_matches:
                 await status_msg.edit_text(
@@ -711,8 +728,11 @@ class TelegramNotifier:
                     include_two_odds=self._settings.two_odds_enabled,
                     two_odds_cap=self._settings.two_odds_cap,
                     two_odds_max_legs=self._settings.two_odds_max_legs,
+                    two_odds_min_legs=self._settings.two_odds_min_legs,
                     two_odds_source=self._settings.two_odds_source,
-                    two_odds_short_window=self._settings.two_odds_short_window
+                    two_odds_short_window=self._settings.two_odds_short_window,
+                    two_odds_markets=self._settings.two_odds_markets,
+                    two_odds_per_fixture=self._settings.two_odds_per_fixture
                 )
                 text_response = PredictionBookingPipeline.format_telegram_dual_digest(dual_res, today_str)
                 keyboard_rows = []
@@ -1002,8 +1022,11 @@ class TelegramNotifier:
                     include_two_odds=self._settings.two_odds_enabled,
                     two_odds_cap=self._settings.two_odds_cap,
                     two_odds_max_legs=self._settings.two_odds_max_legs,
+                    two_odds_min_legs=self._settings.two_odds_min_legs,
                     two_odds_source=self._settings.two_odds_source,
-                    two_odds_short_window=self._settings.two_odds_short_window
+                    two_odds_short_window=self._settings.two_odds_short_window,
+                    two_odds_markets=self._settings.two_odds_markets,
+                    two_odds_per_fixture=self._settings.two_odds_per_fixture
             )
 
             if dual_res.tier_10.picks or dual_res.tier_20.picks:

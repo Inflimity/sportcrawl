@@ -10,12 +10,51 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from core.predictor.leagues import is_allowed, is_excluded
 
 logger = logging.getLogger("SportCrawl.Predictor.Filter")
+
+# How close to kickoff a fixture may be and still be worth picking.
+#
+# ``status_type`` is not enough on its own. It is whatever the last scrape
+# wrote, and the upcoming-fixtures sweep does not revisit a match once it has
+# kicked off, so a 15:00 game is still stored as "notstarted" at 21:00 and
+# sails through the status check. Checking the kickoff timestamp against the
+# clock is the check that cannot go stale.
+#
+# The lead time is not zero because a selection still has to be priced and
+# booked after it is screened, and SportyBet closes the market at kickoff.
+MIN_LEAD_MINUTES = 5
+
+
+def kickoff_utc(match: dict[str, Any]) -> Optional[datetime]:
+    """
+    Kickoff as an aware UTC datetime, or ``None`` if the fixture carries none.
+
+    ``startTimestamp`` is preferred: it is unix epoch seconds and therefore
+    unambiguous. ``start_time_utc`` is the fallback and may be naive, in which
+    case it is read as UTC — which is what the field name promises.
+    """
+    ts = match.get("startTimestamp")
+    if ts:
+        try:
+            return datetime.fromtimestamp(int(ts), tz=timezone.utc)
+        except (TypeError, ValueError, OSError):
+            pass
+
+    raw = match.get("start_time_utc")
+    if raw:
+        try:
+            parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    return None
 
 
 @dataclass
@@ -44,6 +83,7 @@ class FilterStats:
     total: int = 0
     kept: int = 0
     already_started: int = 0
+    past_kickoff: int = 0
     excluded_competition: int = 0
     not_allowlisted: int = 0
     malformed: int = 0
@@ -66,6 +106,8 @@ def load_fixture_file(path: str | Path) -> list[dict[str, Any]]:
 def filter_fixtures(
     raw_matches: list[dict[str, Any]],
     allow_unlisted: bool = False,
+    now: Optional[datetime] = None,
+    min_lead_minutes: int = MIN_LEAD_MINUTES,
 ) -> tuple[list[Fixture], FilterStats]:
     """
     Keep only fixtures worth predicting on.
@@ -73,9 +115,17 @@ def filter_fixtures(
     Set ``allow_unlisted`` to bypass the competition allowlist while still
     applying the hard exclusions — useful for exploring coverage, not for
     generating real picks.
+
+    Fixtures are dropped once the clock has passed ``min_lead_minutes`` before
+    kickoff, regardless of what ``status_type`` claims. Pass ``now`` to filter
+    as of another moment — backtests must, or they will screen fixtures the
+    graded matchday had already played.
     """
     stats = FilterStats(total=len(raw_matches))
     kept: list[Fixture] = []
+    cutoff = (now or datetime.now(timezone.utc)) + timedelta(minutes=min_lead_minutes)
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
 
     for match in raw_matches:
         home = match.get("home_team") or {}
@@ -92,6 +142,12 @@ def filter_fixtures(
         if match.get("status_type") != "notstarted":
             stats.already_started += 1
             stats._note("already_started", label)
+            continue
+
+        kickoff = kickoff_utc(match)
+        if kickoff is not None and kickoff <= cutoff:
+            stats.past_kickoff += 1
+            stats._note("past_kickoff", f"{label} @ {kickoff.isoformat()}")
             continue
 
         if is_excluded(tournament):
@@ -120,12 +176,14 @@ def filter_fixtures(
 
     stats.kept = len(kept)
     logger.info(
-        "Filtered %d fixtures down to %d tradeable (%d not allowlisted, %d excluded, %d started, %d malformed)",
+        "Filtered %d fixtures down to %d tradeable "
+        "(%d not allowlisted, %d excluded, %d started, %d past kickoff, %d malformed)",
         stats.total,
         stats.kept,
         stats.not_allowlisted,
         stats.excluded_competition,
         stats.already_started,
+        stats.past_kickoff,
         stats.malformed,
     )
     return kept, stats

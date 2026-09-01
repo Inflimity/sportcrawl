@@ -97,6 +97,60 @@ and booking path, but **none** of the main engine's floors, calibration or resul
 3. `LEAGUE_DRAW_PRIOR` is deliberately empty — filling it from recollection rather
    than measurement is what produced the `max(0.70, ...)` Over 1.5 bug.
 
+### 1c. Ticket 4 — the capped "2 odds" banker (`core/predictor/form_pick.py`, `tickets.py`)
+
+At most `two_odds_max_legs` (3) and at least `two_odds_min_legs` (**2**) legs whose
+prices multiply to at most `two_odds_cap` (2.00). Selection is the hand method:
+each side's own last 5 games read off the form guide, **not** head-to-head.
+
+**Why leg count is a target and not an optimisation.** The builder was greedy —
+take the most probable leg, then add whatever still fits — and when that first leg
+was also a long price it consumed the whole budget and the ticket shipped as a
+single game, at whatever market the form rated highest (an Over 2.5 needing three
+goals presented as the day's banker). The fix is not a better greedy rule, because
+*every* multiplicative objective degenerates to the fewest legs allowed:
+
+- Maximising joint probability: each extra leg multiplies in a number below 1.
+- Maximising expected value: the bookmaker's margin puts most legs at
+  `p x odds < 1`, so adding one lowers the product too.
+
+So `build_capped_ticket` searches combinations instead, and treats the cap as a
+**target**: among tickets reaching `DEFAULT_TARGET_RATIO` (0.85) of the cap, it
+takes the safest; only if none reaches it does it fall back to whichever gets
+closest. One leg per fixture, no leg below `DEFAULT_MIN_LEG_PROBABILITY` (0.50),
+and a ticket that could not be built to shape carries a `note` the digest prints —
+a forced single is never presented as the banker ticket.
+
+**Over 1.5 is a candidate market.** It was missing, so the safest goal read on
+offer was Over 2.5. Over 1.5 is a superset of Over 2.5 and therefore never less
+likely — the same match needs two goals rather than three. Ban a market without a
+deploy via `TWO_ODDS_MARKETS`, e.g. `TWO_ODDS_MARKETS="Over 1.5,GG,1,2,X"`.
+
+**Several markets per fixture.** `screen_form_candidates` offers the builder
+`two_odds_per_fixture` (3) markets per fixture rather than one, so a fixture whose
+best read is priced beyond the cap can still contribute at a shorter line instead
+of being dropped whole. It costs no extra SportyBet calls — `attach_odds` caches
+markets per event, so the call count is per *fixture*. `price_depth` is therefore a
+fixture count on the form path.
+
+Settings, all in `config/settings.py`: `two_odds_enabled`, `two_odds_cap`,
+`two_odds_max_legs`, `two_odds_min_legs`, `two_odds_source`,
+`two_odds_short_window`, `two_odds_markets`, `two_odds_per_fixture`.
+
+**Still unmeasured**: a ticket-level backtest of this shape over the 8 matchdays
+`scratchpad/multiday.py` already fetches. The 142-pick backtest grades individual
+picks and says nothing about how a 2-3 leg capped ticket performs.
+
+### 1d. Kickoff cutoff (`core/predictor/filter.py`)
+
+`filter_fixtures` drops any fixture past `MIN_LEAD_MINUTES` (5) before kickoff,
+against the clock, independent of `status_type`. The status check alone was not
+enough: the upcoming-fixtures sweep never revisits a match once it has started, so
+a 15:00 kickoff was still stored as `"notstarted"` at 21:00 and screened as
+live. Counted separately as `FilterStats.past_kickoff` — a finished match and a
+stale-status match are different diagnoses. **Backtests must pass `now=`**, or
+they will screen fixtures the graded matchday had already played.
+
 ### 2. SportyBet Automated Booking Engine (`services/sportybet_service.py` & `core/booker_engine.py`)
 - **Direct REST API Integration**: Calls `POST https://www.sportybet.com/api/{country}/orders/share` with structured payload:
   ```json
@@ -127,13 +181,13 @@ and booking path, but **none** of the main engine's floors, calibration or resul
 
 ### 4. Telegram Bot & Scheduler (`notifiers/telegram_bot.py`)
 - **Commands**:
-  - `/predict` (or `/picks`, `/bankers`): Generates **both Top 10 Bankers & Top 20 Mega Accumulator** with individual SportyBet booking codes & buttons.
+  - `/predict` (or `/picks`, `/bankers`): Generates **both Top 10 Bankers & Top 20 Mega Accumulator** with individual SportyBet booking codes & buttons. Refreshes fixtures from SofaScore before screening — it previously preferred whatever the DB held, which is how a 21:00 request returned a pick on a 15:00 match.
   - `/top10` (or `/predict 10`): Generates specifically the Top 10 Banker Ticket.
   - `/top20` (or `/predict 20`): Generates specifically the Top 20 Mega Accumulator Ticket.
   - `/book [text]`: Auto-books pasted prediction text directly.
   - `/today`, `/upcoming`, `/live`, `/top`: Fixtures and score tables.
   - `/export`: Download full `.txt` or `.json` match documents.
-- **Autonomous Scheduled Digests**: Runs daily at **08:00, 15:00, and 22:00 WAT** with fixture snapshots, file attachments, and **Dual Ticket (Top 10 & Top 20)** banker picks.
+- **Autonomous Scheduled Digests**: Runs daily at **08:00, 12:00, and 17:00 WAT** with fixture snapshots, file attachments, and **Dual Ticket (Top 10 & Top 20)** banker picks. Every window **re-scrapes SofaScore first**, so each digest screens a fresh card rather than the morning's. The old 22:00 slot was dropped: by then most of the day's fixtures have been played, so it had little left to book.
 
 ### 5. Web Dashboard (`static/`)
 - Fast, dark-mode glassmorphic interface at `http://localhost:8000`.

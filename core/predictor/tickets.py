@@ -40,6 +40,7 @@ sample builds.
 
 from __future__ import annotations
 
+import itertools
 import logging
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
@@ -72,6 +73,10 @@ class Ticket:
     legs: list[Pick]
     leg_odds: list[Optional[float]] = field(default_factory=list)
     label: str = ""
+    # Set when the ticket is not the shape that was asked for — too few legs
+    # fitted under the cap, say. Surfaced in the digest so a short ticket is
+    # never mistaken for the intended one.
+    note: str = ""
 
     @property
     def size(self) -> int:
@@ -256,61 +261,150 @@ def format_ladder(tickets: list[Ticket], max_payout: Optional[float] = DEFAULT_M
     return "\n".join(lines)
 
 
+# Fraction of the cap a ticket must reach before it counts as having filled it.
+# A "2 odds" ticket that returns 1.30 is not the product asked for, so a longer
+# combination that actually approaches 2.00 is preferred over a shorter, safer
+# one that does not.
+DEFAULT_TARGET_RATIO = 0.85
+
+# No leg below this shrunk probability may enter a banker, whatever it does for
+# the combined price. The cap is a payout target, not a licence to pad.
+DEFAULT_MIN_LEG_PROBABILITY = 0.5
+
+# Largest candidate pool the exhaustive search will consider. Combinations grow
+# as C(n, legs); 40 candidates at 3 legs is under 10k evaluations, which is
+# nothing, and the cap is only ever filled from the top of the ranking anyway.
+MAX_SEARCH_POOL = 40
+
+
+def _fixture_key(pick: Pick) -> tuple[str, str]:
+    return (pick.fixture.home_name, pick.fixture.away_name)
+
+
 def build_capped_ticket(
     priced: Sequence[PricedPick],
     max_combined_odds: float = 2.0,
     max_legs: int = 3,
+    min_legs: int = 2,
     label: str = "2 Odds",
+    target_ratio: float = DEFAULT_TARGET_RATIO,
+    min_leg_probability: float = DEFAULT_MIN_LEG_PROBABILITY,
 ) -> Optional[Ticket]:
     """
-    The strongest short accumulator that stays under a price cap.
+    The safest short accumulator that actually reaches a price cap.
 
-    Legs are taken highest-probability first and added only while the running
-    product stays at or under ``max_combined_odds``. A leg too expensive to fit
-    is SKIPPED rather than ending the search: stopping at the first one that
-    does not fit would end most tickets at a single leg, because the very
-    shortest prices are not always the most probable selections.
+    Two objectives are in tension and neither survives alone.
 
-    Returns ``None`` if nothing is priced — an unpriced ticket has no combined
+    Maximising joint probability degenerates: every extra leg multiplies in a
+    number below one, so "safest" always answers with the fewest legs allowed.
+    Maximising expected value degenerates the same way, because the bookmaker's
+    margin means a leg is typically priced above its true probability, so
+    ``p x odds < 1`` and adding one lowers the product. Either objective on its
+    own returns a single leg — which is exactly the behaviour this replaced.
+
+    So leg count is treated as what it is: a target, not something to optimise.
+    Combinations that reach ``target_ratio`` of the cap are the ones that
+    deliver the product asked for, and the safest of *those* wins. Only when
+    none reaches it does the search fall back to whichever combination gets
+    closest to the cap.
+
+    Legs are constrained to one per fixture, to at least ``min_legs``, and to
+    selections above ``min_leg_probability`` — a cap is a payout target, not a
+    reason to pad the slip with a coin flip.
+
+    Returns ``None`` if nothing is priced: an unpriced ticket has no combined
     odds, so a cap could not be honoured and claiming otherwise would be a lie
     about the one property the caller asked for.
     """
-    pool = [p for p in priced if p.odds and p.odds > 1.0]
+    pool = [
+        p for p in priced
+        if p.odds and p.odds > 1.0 and p.pick.probability >= min_leg_probability
+    ]
     if not pool:
-        logger.warning("No priced picks available; no capped ticket built.")
-        return None
-
-    pool.sort(key=lambda p: p.pick.probability, reverse=True)
-
-    legs: list[Pick] = []
-    leg_odds: list[Optional[float]] = []
-    seen_fixtures: set[tuple[str, str]] = set()
-    combined = 1.0
-
-    for cand in pool:
-        if len(legs) >= max_legs:
-            break
-        # One leg per fixture. screen_fixtures already enforces this upstream,
-        # but two selections on the same match are correlated and a bookmaker
-        # will not accept them on one slip, so do not depend on it.
-        key = (cand.pick.fixture.home_name, cand.pick.fixture.away_name)
-        if key in seen_fixtures:
-            continue
-        if combined * cand.odds > max_combined_odds:
-            continue
-        legs.append(cand.pick)
-        leg_odds.append(cand.odds)
-        seen_fixtures.add(key)
-        combined *= cand.odds
-
-    if not legs:
         logger.warning(
-            "No leg priced at or under %.2f; no capped ticket built.", max_combined_odds
+            "No priced pick cleared the %.0f%% leg floor; no capped ticket built.",
+            min_leg_probability * 100,
         )
         return None
 
+    # Best-supported first, so the truncation below keeps the strongest reads
+    # and the tie-breaks below resolve toward them.
+    pool.sort(key=lambda p: p.pick.probability, reverse=True)
+    pool = pool[:MAX_SEARCH_POOL]
+
+    max_legs = max(1, max_legs)
+    min_legs = max(1, min(min_legs, max_legs))
+    target = max_combined_odds * target_ratio
+
+    def evaluate(combo: Sequence[PricedPick]) -> Optional[tuple[float, float]]:
+        """``(combined odds, joint probability)``, or ``None`` if invalid."""
+        seen: set[tuple[str, str]] = set()
+        odds = 1.0
+        probability = 1.0
+        for cand in combo:
+            key = _fixture_key(cand.pick)
+            if key in seen:
+                return None
+            seen.add(key)
+            odds *= cand.odds  # type: ignore[operator]
+            if odds > max_combined_odds:
+                return None
+            probability *= cand.pick.probability
+        return odds, probability
+
+    filling: Optional[tuple[float, Sequence[PricedPick], float]] = None   # by probability
+    fallback: Optional[tuple[float, Sequence[PricedPick], float]] = None  # by odds
+
+    for size in range(min_legs, max_legs + 1):
+        for combo in itertools.combinations(pool, size):
+            scored = evaluate(combo)
+            if scored is None:
+                continue
+            odds, probability = scored
+
+            if odds >= target:
+                if filling is None or probability > filling[0]:
+                    filling = (probability, combo, odds)
+            elif fallback is None or odds > fallback[0]:
+                fallback = (odds, combo, probability)
+
+    note = ""
+    if filling is not None:
+        chosen, combined = filling[1], filling[2]
+    elif fallback is not None:
+        chosen, combined = fallback[1], fallback[2]
+        note = (
+            f"no combination reached {target:.2f}; this is the closest to the "
+            f"{max_combined_odds:.2f} cap that the priced legs allow"
+        )
+        logger.info("Capped ticket: nothing reached %.2f; took the closest at %.2f.", target, combined)
+    else:
+        # Not even min_legs fit. Ship the single best leg rather than nothing,
+        # and say so — a one-leg "accumulator" that looks like the intended
+        # ticket is how a risky single got mistaken for a banker before.
+        single = next((p for p in pool if p.odds and p.odds <= max_combined_odds), None)
+        if single is None:
+            logger.warning(
+                "No leg priced at or under %.2f; no capped ticket built.", max_combined_odds
+            )
+            return None
+        chosen, combined = (single,), single.odds  # type: ignore[assignment]
+        note = (
+            f"only one leg could be priced under the {max_combined_odds:.2f} cap — "
+            f"this is a single, not the {min_legs}-leg accumulator"
+        )
+        logger.warning(
+            "Capped ticket: could not fit %d legs under %.2f; falling back to a single.",
+            min_legs, max_combined_odds,
+        )
+
     logger.info(
-        "Capped ticket: %d leg(s) at %.2f combined (cap %.2f).",
-        len(legs), combined, max_combined_odds,
+        "Capped ticket: %d leg(s) at %.2f combined (cap %.2f, target %.2f).",
+        len(chosen), combined, max_combined_odds, target,
     )
-    return Ticket(legs=legs, leg_odds=leg_odds, label=label)
+    return Ticket(
+        legs=[c.pick for c in chosen],
+        leg_odds=[c.odds for c in chosen],
+        label=label,
+        note=note,
+    )

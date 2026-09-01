@@ -285,8 +285,11 @@ class PredictionBookingPipeline:
         include_two_odds: bool = False,
         two_odds_cap: float = 2.0,
         two_odds_max_legs: int = 3,
+        two_odds_min_legs: int = 2,
         two_odds_source: str = "form",
         two_odds_short_window: int = 5,
+        two_odds_markets: Optional[list[str]] = None,
+        two_odds_per_fixture: int = 3,
     ) -> DualPipelineResult:
         """
         Generate BOTH Top 10 Bankers and Top 20 Mega Accumulator tickets simultaneously.
@@ -367,7 +370,10 @@ class PredictionBookingPipeline:
                 auto_book=auto_book,
                 cap=two_odds_cap,
                 max_legs=two_odds_max_legs,
+                min_legs=two_odds_min_legs,
                 source=two_odds_source,
+                markets=two_odds_markets,
+                per_fixture=two_odds_per_fixture,
             )
 
         draws = None
@@ -389,9 +395,12 @@ class PredictionBookingPipeline:
         auto_book: bool = True,
         cap: float = 2.0,
         max_legs: int = 3,
+        min_legs: int = 2,
         price_depth: int = 10,
         source: str = "form",
         forms: Optional[dict] = None,
+        markets: Optional[list[str]] = None,
+        per_fixture: int = 3,
     ) -> "TwoOddsResult":
         """
         Build the short banker: the best legs that multiply to at most ``cap``.
@@ -399,14 +408,24 @@ class PredictionBookingPipeline:
         ``source`` decides where the candidate picks come from:
 
         ``"form"``  reads both sides' last few results off the form guide and
-                    takes the best of Home / Away / Draw / GG / Over 2.5. This
-                    is the hand method the ticket was asked to reproduce, and
-                    it costs no extra requests — the short window is cut from
-                    the events already fetched for Top 10/20.
+                    takes the best of Home / Away / Draw / GG / Over 1.5 /
+                    Over 2.5. This is the hand method the ticket was asked to
+                    reproduce, and it costs no extra requests — the short
+                    window is cut from the events already fetched for Top
+                    10/20.
         ``"model"`` reuses the Poisson screen that feeds Top 10/20.
 
-        Only the top ``price_depth`` candidates are priced: a ticket capped at
-        2.00 across three legs needs legs near 1.25, and those sit at the top.
+        The form source offers the builder ``per_fixture`` markets per fixture
+        rather than one. Committing to a single market per fixture on
+        probability alone is what left the builder unable to fill the cap: the
+        safest market is not always the one that fits, and a fixture whose best
+        read is priced too long had to be dropped whole. Extra selections on an
+        already-matched fixture are close to free — ``attach_odds`` caches
+        markets per event, so the SportyBet call count is per *fixture*, not
+        per candidate.
+
+        ``price_depth`` is therefore a fixture count for the form source, and a
+        pick count for the model source.
         """
         from core.predictor.odds import attach_odds
         from core.predictor.tickets import build_capped_ticket
@@ -419,9 +438,16 @@ class PredictionBookingPipeline:
                 logger.warning("Form source requested without fixtures/forms; using the model screen.")
                 result.source = "model (form inputs unavailable)"
             else:
-                from core.predictor.form_pick import screen_form
+                from core.predictor.form_pick import screen_form_candidates
 
-                form_picks = screen_form(fixtures, forms, prefer_short=True)
+                form_picks = screen_form_candidates(
+                    fixtures,
+                    forms,
+                    prefer_short=True,
+                    per_fixture=per_fixture,
+                    fixture_limit=price_depth,
+                    markets=markets,
+                )
                 if form_picks:
                     candidates = form_picks
                 else:
@@ -434,10 +460,18 @@ class PredictionBookingPipeline:
             return result
 
         # Reuses the booker's service, so the paginated event sweep it already
-        # performed is not repeated.
-        priced = await attach_odds(candidates[:price_depth], service=self.booker.service)
+        # performed is not repeated. The form source has already capped itself
+        # at ``price_depth`` FIXTURES, so it is not truncated again here — doing
+        # so would cut a fixture's alternatives away and reintroduce the very
+        # single-market-per-fixture limit this path exists to remove.
+        to_price = candidates if result.source.startswith("form") else candidates[:price_depth]
+        priced = await attach_odds(to_price, service=self.booker.service)
         ticket = build_capped_ticket(
-            priced, max_combined_odds=cap, max_legs=max_legs, label=f"{cap:g} Odds Banker"
+            priced,
+            max_combined_odds=cap,
+            max_legs=max_legs,
+            min_legs=min_legs,
+            label=f"{cap:g} Odds Banker",
         )
         if not ticket:
             logger.info("No ticket could be built under a %.2f cap.", cap)
@@ -620,9 +654,15 @@ class PredictionBookingPipeline:
         header = (
             f"\n━━━━━━━━━━━━━━━━━━━━"
             f"\n💰 <b>TICKET 4: {two_odds.max_combined_odds:g} ODDS BANKER</b>"
-            f" <i>(max {len(ticket.legs)} legs, capped)</i>"
+            f" <i>({ticket.size} legs, capped)</i>"
         )
         lines = [header]
+
+        # A ticket that could not be built to the shape asked for says so
+        # rather than looking like the intended one. A single leg presented as
+        # "TICKET 4" is how a risky one-game bet got read as a banker.
+        if ticket.note:
+            lines.append(f"⚠️ <i>{ticket.note}</i>")
 
         if two_odds.booking_result and two_odds.booking_result.success:
             b = two_odds.booking_result

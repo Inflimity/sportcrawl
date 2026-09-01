@@ -87,7 +87,8 @@ def format_report(picks: list[Pick], stats: FilterStats, show_dropped: bool = Fa
     lines.append(
         f"Dropped — not allowlisted: {stats.not_allowlisted}, "
         f"excluded competition: {stats.excluded_competition}, "
-        f"already started: {stats.already_started}, malformed: {stats.malformed}"
+        f"already started: {stats.already_started}, "
+        f"past kickoff: {stats.past_kickoff}, malformed: {stats.malformed}"
     )
     lines.append("")
 

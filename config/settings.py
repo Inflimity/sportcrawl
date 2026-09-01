@@ -31,9 +31,12 @@ class Settings(BaseSettings):
     sofascore_headless: bool = True
     sofascore_timeout_ms: int = 30000
 
-    # ── Key Scheduled Daily Digest Windows (Option C: 08:00, 15:00, 22:00)
+    # ── Key Scheduled Daily Digest Windows (08:00, 12:00, 17:00 WAT) ────
+    # Each window re-scrapes SofaScore before screening, so every digest is
+    # built on fixtures that have not kicked off yet. The old 22:00 slot is
+    # gone: by then most of the day's card has been played.
     daily_digest_enabled: bool = True
-    daily_digest_hours: str | list[int] = [8, 15, 22]  # Morning (08:00), Afternoon (15:00), Night (22:00)
+    daily_digest_hours: str | list[int] = [8, 12, 17]  # Morning, Midday, Evening
     send_digest_files: bool = True  # Attach .txt / .json file during scheduled digests
     matches_file_format: str = "both"  # "txt", "json", or "both"
     app_timezone: str = "Africa/Lagos"  # West Africa Time (WAT / UTC+1) - Nigerian Time
@@ -45,8 +48,20 @@ class Settings(BaseSettings):
     two_odds_enabled: bool = True
     two_odds_cap: float = 2.0            # max combined odds for the ticket
     two_odds_max_legs: int = 3
+    two_odds_min_legs: int = 2           # never ship a one-game "accumulator"
     two_odds_source: str = "form"        # "form" (recent form guide) or "model"
     two_odds_short_window: int = 5       # matches per side the form read uses
+    # Markets the form read may choose between, best-supported first. Over 1.5
+    # leads because it is a superset of Over 2.5 and so is never less likely —
+    # the same match needs two goals rather than three. Drop a market here to
+    # ban it from the ticket without a deploy, e.g.
+    # TWO_ODDS_MARKETS="Over 1.5,GG,1,2,X" to exclude Over 2.5 entirely.
+    two_odds_markets: str | list[str] = ["Over 1.5", "GG", "Over 2.5", "1", "2", "X"]
+    # How many of those markets each fixture offers the ticket builder. More
+    # alternatives per fixture cost no extra SportyBet calls (markets are
+    # cached per event) and let a fixture contribute at a shorter line instead
+    # of being dropped when its best read is priced beyond the cap.
+    two_odds_per_fixture: int = 3
 
     # ── Top / Featured Leagues & Competitions ────────────────────────────
     # Matches in these tournaments are prioritized in digests & alerts
@@ -88,6 +103,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "featured_leagues",
+        "two_odds_markets",
         mode="before",
     )
     @classmethod

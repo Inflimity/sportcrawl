@@ -129,3 +129,94 @@ def test_cap_holds_across_randomised_cards():
         if ticket:
             assert ticket.size <= 3
             assert ticket.combined_odds <= 2.0
+
+
+# ── The single-leg bug ──────────────────────────────────────────────────
+#
+# The builder used to be greedy: take the most probable leg, then only add
+# legs that still fit. When the most probable leg was also a long price, it
+# ate the whole budget and the "accumulator" shipped as one game. Worse, that
+# one game was whatever market the form rated highest — an Over 2.5 needing
+# three goals could be presented as the day's banker.
+
+
+def test_never_ships_a_single_when_two_legs_fit():
+    """The greedy build took the 1.55 first and had no room left. This must not."""
+    ticket = build_capped_ticket([
+        _priced("Alpha", "Beta", "Over 2.5", 0.86, 1.55),   # most probable, pricey
+        _priced("Gamma", "Delta", "Over 1.5", 0.80, 1.26),
+        _priced("Eps", "Zeta", "Over 1.5", 0.79, 1.30),
+    ], max_combined_odds=2.0, max_legs=3, min_legs=2)
+
+    assert ticket.size >= 2
+    assert ticket.combined_odds <= 2.0
+    assert not ticket.note
+
+
+def test_min_legs_is_respected_over_raw_probability():
+    """
+    Two legs beat one even though one leg is strictly more probable.
+
+    Maximising joint probability alone always answers "fewest legs", which is
+    the degeneracy that produced the single. The cap is a target, not just a
+    ceiling.
+    """
+    ticket = build_capped_ticket([
+        _priced("A", "B", "Over 1.5", 0.90, 1.90),
+        _priced("C", "D", "Over 1.5", 0.85, 1.25),
+        _priced("E", "F", "Over 1.5", 0.84, 1.28),
+    ], max_combined_odds=2.0, max_legs=3, min_legs=2)
+
+    assert ticket.size == 2
+
+
+def test_a_ticket_must_actually_reach_the_cap():
+    """A '2 odds' ticket returning 1.30 is not the product asked for."""
+    ticket = build_capped_ticket([
+        _priced("A", "B", "Over 1.5", 0.88, 1.12),
+        _priced("C", "D", "Over 1.5", 0.87, 1.14),
+        _priced("E", "F", "Over 1.5", 0.86, 1.40),
+    ], max_combined_odds=2.0, max_legs=3, min_legs=2)
+
+    # The two safest legs make only 1.28. Reaching 0.85 x 2.00 = 1.70 needs
+    # the third, and the builder must take it rather than bank the safer 1.28.
+    assert ticket.combined_odds >= 1.70
+    assert ticket.combined_odds <= 2.0
+
+
+def test_a_forced_single_is_labelled_as_one():
+    """If only one leg fits, say so — do not present it as the banker ticket."""
+    ticket = build_capped_ticket([
+        _priced("A", "B", "Over 1.5", 0.88, 1.20),
+        _priced("C", "D", "Over 1.5", 0.87, 1.30),
+    ], max_combined_odds=1.35, max_legs=3, min_legs=2)
+
+    assert ticket.size == 1
+    assert "single" in ticket.note
+
+
+def test_a_coin_flip_never_pads_the_slip():
+    """Reaching the cap is not a licence to add a leg below the quality floor."""
+    ticket = build_capped_ticket([
+        _priced("A", "B", "Over 1.5", 0.86, 1.30),
+        _priced("C", "D", "Over 1.5", 0.85, 1.32),
+        _priced("E", "F", "X", 0.31, 1.15),   # cheap, and nowhere near a banker
+    ], max_combined_odds=2.0, max_legs=3, min_legs=2, min_leg_probability=0.5)
+
+    assert all(leg.probability >= 0.5 for leg in ticket.legs)
+
+
+def test_min_legs_holds_across_randomised_cards():
+    random.seed(11)
+    for _ in range(300):
+        card = [
+            _priced(f"H{i}", f"A{i}", "Over 1.5",
+                    round(random.uniform(0.55, 0.90), 2),
+                    round(random.uniform(1.10, 1.45), 2))
+            for i in range(8)
+        ]
+        ticket = build_capped_ticket(card, max_combined_odds=2.0, max_legs=3, min_legs=2)
+        assert ticket is not None
+        assert ticket.combined_odds <= 2.0 + 1e-9
+        # Eight legs between 1.10 and 1.45 always admit a pair under 2.00.
+        assert ticket.size >= 2 and not ticket.note

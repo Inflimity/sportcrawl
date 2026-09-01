@@ -113,3 +113,89 @@ def test_rationale_shows_the_form_lines():
     pick = screen_form([_fixture()], forms, prefer_short=False)[0]
     assert "WWWWW" in pick.rationale and "LLLLL" in pick.rationale
     assert "raw" in pick.rationale and "shrink" in pick.rationale
+
+
+# ── Over 1.5 ────────────────────────────────────────────────────────────
+
+
+def test_over15_is_a_candidate_market():
+    """
+    It was missing entirely, so the safest goal read available was Over 2.5 —
+    a market needing three goals offered where two would have done.
+    """
+    from core.predictor.form_pick import DEFAULT_MARKETS, ranked_markets
+
+    assert "Over 1.5" in DEFAULT_MARKETS
+    assert "Over 1.5" in BASE_RATES
+
+    home = TeamForm(team_id=10, name="Home", recent_results="WWDWW",
+                    over15_rate=1.0, over25_rate=0.4, matches_used=5)
+    away = TeamForm(team_id=20, name="Away", recent_results="WDWWL",
+                    over15_rate=0.8, over25_rate=0.4, matches_used=5)
+
+    ranked = dict((sel, p) for sel, p, _, _ in ranked_markets(home, away))
+    assert ranked["Over 1.5"] > ranked["Over 2.5"]
+
+
+def test_the_best_market_can_now_be_over15():
+    home = TeamForm(team_id=10, name="Home", recent_results="WWDWW",
+                    over15_rate=1.0, over25_rate=0.4, matches_used=5)
+    away = TeamForm(team_id=20, name="Away", recent_results="WDWWL",
+                    over15_rate=1.0, over25_rate=0.4, matches_used=5)
+    assert best_market(home, away)[0] == "Over 1.5"
+
+
+def test_a_market_can_be_banned_without_a_deploy():
+    """TWO_ODDS_MARKETS drops a market from the candidate list."""
+    from core.predictor.form_pick import ranked_markets
+
+    home = TeamForm(team_id=10, name="Home", recent_results="WWWWW",
+                    over15_rate=1.0, over25_rate=1.0, matches_used=5)
+    away = TeamForm(team_id=20, name="Away", recent_results="WWWWW",
+                    over15_rate=1.0, over25_rate=1.0, matches_used=5)
+
+    allowed = ["Over 1.5", "GG", "1", "2", "X"]
+    assert all(sel != "Over 2.5" for sel, *_ in ranked_markets(home, away, markets=allowed))
+
+
+# ── Multiple candidates per fixture ─────────────────────────────────────
+
+
+def test_candidates_offer_several_markets_per_fixture():
+    """
+    One selection per fixture forced the ticket builder to drop a whole
+    fixture whenever its best read was priced beyond the cap.
+    """
+    from core.predictor.form_pick import screen_form_candidates
+
+    forms = {
+        10: _form(10, "Home", "WWDWW", btts=0.8, over25=0.8, used=5),
+        20: _form(20, "Away", "WDWWL", btts=0.8, over25=0.8, used=5),
+    }
+    picks = screen_form_candidates([_fixture()], forms, per_fixture=3)
+
+    assert len(picks) == 3
+    assert len({p.selection for p in picks}) == 3
+    # Still ranked best-supported first within the fixture.
+    assert [p.probability for p in picks] == sorted(
+        (p.probability for p in picks), reverse=True
+    )
+
+
+def test_candidates_are_capped_by_fixture_not_by_pick():
+    """Pricing costs one SportyBet call per fixture, so the limit is fixtures."""
+    from core.predictor.form_pick import screen_form_candidates
+
+    fixtures, forms = [], {}
+    for i in range(5):
+        h, a = 100 + i * 2, 101 + i * 2
+        fixtures.append(Fixture(match_id=i, tournament="T", category="C",
+                                home_name=f"H{i}", away_name=f"A{i}",
+                                home_id=h, away_id=a, start_utc="", start_local=""))
+        forms[h] = _form(h, f"H{i}", "WWDWW", btts=0.8, over25=0.8, used=5)
+        forms[a] = _form(a, f"A{i}", "WDWWL", btts=0.8, over25=0.8, used=5)
+
+    picks = screen_form_candidates(fixtures, forms, per_fixture=3, fixture_limit=2)
+
+    assert len({p.fixture.match_id for p in picks}) == 2
+    assert len(picks) == 6

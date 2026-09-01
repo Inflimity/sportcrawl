@@ -179,13 +179,13 @@ async def main() -> None:
     # Connect monitor to engine
     monitor.on_match(engine.process_match)
 
-    # ── 7. Daily Digest Scheduler (Option C: 08:00, 15:00, 22:00 WAT) ────
+    # ── 7. Daily Digest Scheduler (08:00, 12:00, 17:00 WAT) ──────────────
     async def run_digest_scheduler() -> None:
         """Background loop checking and triggering scheduled daily digests."""
         if not settings.daily_digest_enabled:
             return
 
-        digest_hours = settings.daily_digest_hours if isinstance(settings.daily_digest_hours, list) else [8, 15, 22]
+        digest_hours = settings.daily_digest_hours if isinstance(settings.daily_digest_hours, list) else [8, 12, 17]
         tz = ZoneInfo(settings.app_timezone)
         logger.info("Daily Digest Scheduler active — scheduled hours: %s (Timezone: %s)", digest_hours, settings.app_timezone)
         fired_today: set[str] = set()
@@ -203,18 +203,24 @@ async def main() -> None:
 
                         if current_hour < 12:
                             digest_title = "🌅 Morning Football Fixtures Preview"
-                        elif current_hour < 18:
-                            digest_title = "⚡ Afternoon Match Updates & Live Scores"
+                        elif current_hour < 16:
+                            digest_title = "☀️ Midday Fixtures & Fresh Picks"
                         else:
-                            digest_title = "🌙 Night Match Recap & Results"
+                            digest_title = "⚡ Evening Fixtures & Fresh Picks"
 
                         logger.info("Triggering scheduled %s for hour %d:00 WAT...", digest_title, current_hour)
                         
-                        # Refresh latest from SofaScore
+                        # Re-scrape SofaScore before every digest. Screening the
+                        # stored card would re-offer fixtures that have since
+                        # kicked off; the kickoff cutoff in filter_fixtures drops
+                        # those, so a stale card yields fewer picks, not wrong
+                        # ones — but fewer picks is still the wrong digest.
                         today_str = now.strftime("%Y-%m-%d")
                         latest_matches = await monitor.fetch_today_matches(today_str)
                         for m in latest_matches:
                             await db.upsert_match(m, is_featured=m.get("is_featured", False))
+                        logger.info("Refreshed %d fixtures from SofaScore for the %d:00 digest.",
+                                    len(latest_matches), current_hour)
 
                         await notifier.send_daily_digest(
                             title=digest_title,

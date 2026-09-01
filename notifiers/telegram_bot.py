@@ -19,6 +19,7 @@ import html as html_lib
 import io
 import json
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Optional
@@ -48,6 +49,128 @@ def to_wat(dt: Optional[datetime]) -> Optional[datetime]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(LAGOS_TZ)
+
+
+# The daily digest carries four ticket blocks (Top 10, Top 20, draws, the capped
+# banker) and outgrew Telegram's 4096-character limit for a single message once
+# the draw block began listing each ticket's own legs — /predict then died with
+# BadRequest("Message is too long") over bets that had already been booked.
+# Each ticket is now sent as its own message, which fixes the length and also
+# reads better: a code sits next to the legs it holds instead of scrolling past
+# three other tickets.
+TELEGRAM_MAX_CHARS = 4096
+TICKET_SEPARATOR = "\u2501" * 20
+
+
+def split_html_message(text: str, limit: int = TELEGRAM_MAX_CHARS) -> list[str]:
+    """
+    Split a digest into one message per ticket.
+
+    Ticket blocks are marked by a separator line. Any preamble before the first
+    separator rides along with the first ticket rather than becoming a message
+    of its own. A single ticket over the limit — which would take a very long
+    card — falls back to line splitting, and an over-long line to a cut that
+    avoids landing inside a "<...>"; every tag in the digest opens and closes
+    within one line, so neither fallback can orphan one.
+    """
+    messages: list[str] = []
+    for block in _split_blocks(text):
+        block = block.strip("\n")
+        if not block.strip():
+            continue
+        if len(block) <= limit:
+            messages.append(block)
+            continue
+        messages.extend(_split_oversized(block, limit))
+    return messages or [text]
+
+
+def _split_blocks(text: str) -> list[str]:
+    """Group lines into ticket blocks, each starting at a separator line."""
+    blocks: list[str] = []
+    buf: list[str] = []
+    for line in text.split("\n"):
+        if TICKET_SEPARATOR in line and any(l.strip() for l in buf):
+            blocks.append("\n".join(buf))
+            buf = []
+        buf.append(line)
+    if buf:
+        blocks.append("\n".join(buf))
+    # The header ("Daily AI Predictions ... screened N fixtures") is not a
+    # ticket; keep it attached to the first one instead of sending it alone.
+    if len(blocks) > 1 and TICKET_SEPARATOR not in blocks[0]:
+        blocks[1] = f"{blocks[0]}\n{blocks[1]}"
+        blocks.pop(0)
+    return blocks
+
+
+def _split_oversized(block: str, limit: int) -> list[str]:
+    """Break a single over-long ticket at line boundaries."""
+    out: list[str] = []
+    current = ""
+    for line in block.split("\n"):
+        for piece in (_split_line(line, limit) if len(line) > limit else [line]):
+            if current and len(current) + len(piece) + 1 > limit:
+                out.append(current)
+                current = piece
+            else:
+                current = f"{current}\n{piece}" if current else piece
+    if current.strip():
+        out.append(current)
+    return out
+
+
+def _split_line(line: str, limit: int) -> list[str]:
+    """Cut an over-long line into <=limit pieces without splitting a tag."""
+    pieces: list[str] = []
+    while len(line) > limit:
+        cut = limit
+        # Back off out of any "<...>" the cut would land inside.
+        open_idx = line.rfind("<", 0, cut)
+        if open_idx != -1 and line.find(">", open_idx) >= cut:
+            cut = open_idx
+        if cut <= 0:  # pathological: a tag longer than the limit
+            cut = limit
+        pieces.append(line[:cut])
+        line = line[cut:]
+    if line:
+        pieces.append(line)
+    return pieces
+
+
+def _collect_booking_codes(single: Any = None, dual: Any = None) -> list[tuple[str, str]]:
+    """
+    Pull whatever booking codes a pipeline run produced.
+
+    Captured right after the pipeline returns so that a later failure — the
+    digest not formatting, Telegram refusing the message — still reports codes
+    for tickets that are already live on SportyBet.
+    """
+    codes: list[tuple[str, str]] = []
+
+    def add(label: str, res: Any) -> None:
+        book = getattr(res, "booking_result", None)
+        if book and getattr(book, "success", False) and getattr(book, "booking_code", None):
+            codes.append((label, book.booking_code))
+
+    if single is not None:
+        add("Ticket", single)
+    if dual is not None:
+        add("Top 10", getattr(dual, "tier_10", None))
+        add("Top 20", getattr(dual, "tier_20", None))
+        add("2 Odds", getattr(dual, "two_odds", None))
+        draws = getattr(dual, "draws", None)
+        for entry in getattr(draws, "tickets", None) or []:
+            label = getattr(getattr(entry, "ticket", None), "label", "Draw")
+            add(label, entry)
+    return codes
+
+
+def _strip_html(text: str) -> str:
+    """Plain-text fallback for a chunk Telegram refused to parse as HTML."""
+    return html_lib.unescape(re.sub(r"<[^>]+>", "", text))
+
+
 
 
 def _escape(text: str) -> str:
@@ -633,6 +756,57 @@ class TelegramNotifier:
                 parse_mode=ParseMode.HTML,
             )
 
+    async def _deliver_long_html(
+        self,
+        chat_id: int,
+        text: str,
+        status_msg: Any = None,
+        reply_markup: Any = None,
+    ) -> None:
+        """
+        Send a digest as one message per ticket.
+
+        The first message edits `status_msg` when one is given, so the
+        "analyzing..." placeholder becomes the first ticket rather than being
+        left behind; the keyboard rides on the last, next to the codes it links to.
+
+        A message Telegram still refuses is retried as plain text. The booking
+        codes matter more than the formatting, and the whole reason this path is
+        careful is that a failed send used to lose codes for bets that had
+        already been placed.
+        """
+        messages = split_html_message(text)
+        last = len(messages) - 1
+        for idx, message in enumerate(messages):
+            markup = reply_markup if idx == last else None
+            try:
+                if idx == 0 and status_msg is not None:
+                    await status_msg.edit_text(
+                        message,
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                        reply_markup=markup,
+                    )
+                else:
+                    await self._bot.send_message(
+                        chat_id=chat_id,
+                        text=message,
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                        reply_markup=markup,
+                    )
+            except Exception as e:
+                logger.error("Failed to send digest message %d/%d: %s", idx + 1, len(messages), e)
+                try:
+                    await self._bot.send_message(
+                        chat_id=chat_id,
+                        text=_strip_html(message),
+                        disable_web_page_preview=True,
+                        reply_markup=markup,
+                    )
+                except Exception as e2:
+                    logger.error("Plain-text retry of message %d also failed: %s", idx + 1, e2)
+
     async def _cmd_predict(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handler for /predict command — runs statistical screening and auto-books on SportyBet."""
         if not update.effective_message:
@@ -643,6 +817,7 @@ class TelegramNotifier:
             parse_mode=ParseMode.HTML,
         )
 
+        booked_codes: list[tuple[str, str]] = []
         try:
             today_str = datetime.now(LAGOS_TZ).strftime("%Y-%m-%d")
             raw_matches = []
@@ -712,6 +887,7 @@ class TelegramNotifier:
                 # Single tier request
                 result = await pipeline.run_pipeline(raw_matches, top_n=req_n, auto_book=True)
                 title = f"🎯 Today's Top {req_n} Banker Predictions ({today_str})"
+                booked_codes = _collect_booking_codes(single=result)
                 text_response = PredictionBookingPipeline.format_telegram_digest(result, title)
                 keyboard_rows = []
                 if result.booking_result and result.booking_result.success and result.booking_result.share_url:
@@ -738,6 +914,7 @@ class TelegramNotifier:
                     top_max_per_market=self._settings.top_max_per_market,
                     top_pool_depth=self._settings.top_pool_depth
                 )
+                booked_codes = _collect_booking_codes(dual=dual_res)
                 text_response = PredictionBookingPipeline.format_telegram_dual_digest(dual_res, today_str)
                 keyboard_rows = []
                 links = []
@@ -755,18 +932,30 @@ class TelegramNotifier:
                 ])
                 keyboard = InlineKeyboardMarkup(keyboard_rows)
 
-            await status_msg.edit_text(
-                text_response,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
+            await self._deliver_long_html(
+                chat_id=status_msg.chat_id,
+                text=text_response,
+                status_msg=status_msg,
                 reply_markup=keyboard,
             )
         except Exception as e:
             logger.error("Error executing /predict command: %s", e, exc_info=True)
-            await status_msg.edit_text(
-                f"❌ <b>Prediction failed:</b> <i>{html_lib.escape(str(e))}</i>",
-                parse_mode=ParseMode.HTML,
-            )
+            # The tickets are booked before the digest is built, so a failure
+            # here is usually a display failure over bets that already exist.
+            # Reporting only "Prediction failed" stranded live booking codes.
+            detail = f"❌ <b>Prediction failed:</b> <i>{html_lib.escape(str(e))}</i>"
+            if booked_codes:
+                detail += (
+                    "\n\n⚠️ <i>Tickets were already booked before this failed. "
+                    "Codes:</i>\n"
+                    + "\n".join(f"• {label}: <code>{code}</code>" for label, code in booked_codes)
+                )
+            try:
+                await status_msg.edit_text(detail, parse_mode=ParseMode.HTML)
+            except Exception:
+                await self._bot.send_message(
+                    chat_id=status_msg.chat_id, text=_strip_html(detail)
+                )
 
     async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle inline button clicks."""
@@ -1048,11 +1237,9 @@ class TelegramNotifier:
                     links.append(InlineKeyboardButton("💰 2 Odds Betslip", url=dual_res.two_odds.booking_result.share_url))
                 pred_kb = InlineKeyboardMarkup([links]) if links else None
 
-                await self._bot.send_message(
+                await self._deliver_long_html(
                     chat_id=self._admin_chat_id,
                     text=predict_msg,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
                     reply_markup=pred_kb,
                 )
                 logger.info("Sent scheduled Top 10 & Top 20 AI picks and booking codes to Telegram")

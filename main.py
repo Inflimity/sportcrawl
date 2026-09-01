@@ -268,6 +268,8 @@ async def main() -> None:
         # ── Startup auto-prediction on boot ──────────────────────────
         async def run_startup_prediction() -> None:
             # Wait for monitor initial scrape to complete and populate DB
+            if not settings.startup_prediction_enabled:
+                return
             await asyncio.sleep(10)
             today_str = datetime.now(ZoneInfo(settings.app_timezone)).strftime("%Y-%m-%d")
             matches = await db.get_matches_for_date(today_str)
@@ -277,7 +279,11 @@ async def main() -> None:
             try:
                 from services.pipeline import PredictionBookingPipeline, convert_matches_to_raw_dicts
                 raw_matches = convert_matches_to_raw_dicts(matches)
-                logger.info("🧠 Running initial startup statistical prediction on %d fixtures...", len(raw_matches))
+                logger.info(
+                    "🧠 Running initial startup statistical prediction on %d fixtures (auto-book: %s)...",
+                    len(raw_matches),
+                    "on" if settings.startup_prediction_autobook else "off",
+                )
                 pipeline = PredictionBookingPipeline(country_code="ng", headless=True)
                 # Mirror the settings /predict and the scheduled digest use.
                 # This called run_dual_pipeline with defaults only, so the boot
@@ -285,7 +291,8 @@ async def main() -> None:
                 # the ranking settings from .env — it was booking a different
                 # set of tickets from every other path.
                 dual_res = await pipeline.run_dual_pipeline(
-                    raw_matches, auto_book=True, include_draws=True,
+                    raw_matches, auto_book=settings.startup_prediction_autobook,
+                    include_draws=True,
                     include_two_odds=settings.two_odds_enabled,
                     two_odds_cap=settings.two_odds_cap,
                     two_odds_max_legs=settings.two_odds_max_legs,

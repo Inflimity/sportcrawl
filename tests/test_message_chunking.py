@@ -232,3 +232,22 @@ def test_startup_path_signature_matches_the_notifier():
         disable_web_page_preview=True,
         reply_markup=None,
     )
+
+
+def test_startup_booking_is_off_by_default():
+    """A restart is a deploy, not a betting decision."""
+    from config.settings import Settings
+
+    s = Settings(telegram_bot_token="1:x", admin_chat_id=1)
+    assert s.startup_prediction_autobook is False
+    assert s.startup_prediction_enabled is True
+
+
+def test_startup_settings_read_from_the_environment(monkeypatch):
+    from config.settings import Settings
+
+    monkeypatch.setenv("STARTUP_PREDICTION_AUTOBOOK", "true")
+    monkeypatch.setenv("STARTUP_PREDICTION_ENABLED", "false")
+    s = Settings(telegram_bot_token="1:x", admin_chat_id=1)
+    assert s.startup_prediction_autobook is True
+    assert s.startup_prediction_enabled is False

@@ -41,6 +41,20 @@ class Settings(BaseSettings):
     matches_file_format: str = "both"  # "txt", "json", or "both"
     app_timezone: str = "Africa/Lagos"  # West Africa Time (WAT / UTC+1) - Nigerian Time
 
+    # ── Startup prediction on boot ───────────────────────────────────────
+    # The service runs a full prediction on every restart. Booking there is
+    # off by default: a restart is a deploy, not a betting decision, and each
+    # one used to mint a Top 10 and Top 20 code nobody would ever play. There
+    # is no once-per-day guard anywhere, so the 08:00/12:00/17:00 windows book
+    # the day's real tickets regardless.
+    #
+    # The screening itself still costs ~2 SofaScore requests per tradeable
+    # fixture (~220 on a full card), which is the load that has got an IP
+    # blocked before. Set STARTUP_PREDICTION_ENABLED=false to skip boot
+    # prediction entirely; STARTUP_PREDICTION_AUTOBOOK=true to restore booking.
+    startup_prediction_enabled: bool = True
+    startup_prediction_autobook: bool = False
+
     # ── Ticket 4: the capped "2 odds" banker ────────────────────────────
     # On by default. Costs NO extra SofaScore requests: the short form window
     # is cut from the events already fetched for Top 10/20.

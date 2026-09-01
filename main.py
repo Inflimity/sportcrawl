@@ -279,7 +279,26 @@ async def main() -> None:
                 raw_matches = convert_matches_to_raw_dicts(matches)
                 logger.info("🧠 Running initial startup statistical prediction on %d fixtures...", len(raw_matches))
                 pipeline = PredictionBookingPipeline(country_code="ng", headless=True)
-                dual_res = await pipeline.run_dual_pipeline(raw_matches, auto_book=True)
+                # Mirror the settings /predict and the scheduled digest use.
+                # This called run_dual_pipeline with defaults only, so the boot
+                # run silently dropped the draw ladder and Ticket 4 and ignored
+                # the ranking settings from .env — it was booking a different
+                # set of tickets from every other path.
+                dual_res = await pipeline.run_dual_pipeline(
+                    raw_matches, auto_book=True, include_draws=True,
+                    include_two_odds=settings.two_odds_enabled,
+                    two_odds_cap=settings.two_odds_cap,
+                    two_odds_max_legs=settings.two_odds_max_legs,
+                    two_odds_min_legs=settings.two_odds_min_legs,
+                    two_odds_source=settings.two_odds_source,
+                    two_odds_short_window=settings.two_odds_short_window,
+                    two_odds_markets=settings.two_odds_markets,
+                    two_odds_per_fixture=settings.two_odds_per_fixture,
+                    top_rank_by_edge=settings.top_rank_by_edge,
+                    top_min_edge=settings.top_min_edge,
+                    top_max_per_market=settings.top_max_per_market,
+                    top_pool_depth=settings.top_pool_depth,
+                )
 
                 if dual_res.tier_10.picks or dual_res.tier_20.picks:
                     logger.info("🎯 Generated Top 10 (%d picks) and Top 20 (%d picks) on boot!", len(dual_res.tier_10.picks), len(dual_res.tier_20.picks))
@@ -292,12 +311,15 @@ async def main() -> None:
                         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
                         links.append(InlineKeyboardButton("🔗 Top 20 Betslip", url=dual_res.tier_20.booking_result.share_url))
 
+                    if dual_res.two_odds and dual_res.two_odds.booking_result and dual_res.two_odds.booking_result.success and dual_res.two_odds.booking_result.share_url:
+                        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                        links.append(InlineKeyboardButton("💰 2 Odds Betslip", url=dual_res.two_odds.booking_result.share_url))
+
                     pred_kb = InlineKeyboardMarkup([links]) if links else None
 
                     await notifier.send_custom_message(
                         text=predict_msg,
                         parse_mode="HTML",
-                        disable_web_page_preview=True,
                         reply_markup=pred_kb,
                     )
             except Exception as e:

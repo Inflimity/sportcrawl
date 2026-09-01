@@ -193,3 +193,42 @@ def test_delivery_falls_back_to_plain_text_when_html_is_refused():
     text, parse_mode, _ = bot.sent[0]
     assert parse_mode is None
     assert "ABC123" in text          # the code survives the formatting failure
+
+
+def test_send_custom_message_accepts_main_pys_call_and_splits():
+    """
+    main.py passed disable_web_page_preview=, which send_custom_message did not
+    accept — a TypeError swallowed by that call site's except, so the startup
+    digest never reached Telegram at all.
+    """
+    import asyncio
+
+    bot = _StubBot()
+    notifier = _notifier(bot)
+    asyncio.run(
+        notifier.send_custom_message(
+            text=_full_digest(),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup="KB",
+        )
+    )
+    assert len(bot.sent) == len(split_html_message(_full_digest()))
+    assert all(len(text) <= TELEGRAM_MAX_CHARS for text, _, _ in bot.sent)
+    assert bot.sent[-1][2] == "KB"
+
+
+def test_startup_path_signature_matches_the_notifier():
+    """Pin the call in main.py against the method it calls."""
+    import inspect
+
+    from notifiers.telegram_bot import TelegramNotifier
+
+    sig = inspect.signature(TelegramNotifier.send_custom_message)
+    sig.bind(
+        None,
+        text="x",
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+        reply_markup=None,
+    )

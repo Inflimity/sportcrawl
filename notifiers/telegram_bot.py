@@ -1099,14 +1099,25 @@ class TelegramNotifier:
         text: str,
         parse_mode: str = "HTML",
         reply_markup: Any = None,
+        disable_web_page_preview: bool = True,
     ) -> None:
-        """Send custom formatted message to the admin chat."""
+        """
+        Send a custom message to the admin chat, split per ticket if it is a digest.
+
+        `disable_web_page_preview` is accepted and ignored — previews are always
+        off here. main.py passed it, which raised TypeError on every boot and was
+        swallowed by that call site's broad except, so the startup digest never
+        sent at all.
+        """
+        if parse_mode.upper() == "HTML":
+            await self._deliver_long_html(
+                chat_id=self._admin_chat_id, text=text, reply_markup=reply_markup
+            )
+            return
         try:
-            p_mode = ParseMode.HTML if parse_mode.upper() == "HTML" else None
             await self._bot.send_message(
                 chat_id=self._admin_chat_id,
                 text=text,
-                parse_mode=p_mode,
                 disable_web_page_preview=True,
                 reply_markup=reply_markup,
             )

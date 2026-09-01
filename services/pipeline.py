@@ -687,7 +687,11 @@ class PredictionBookingPipeline:
             "🎯 <b>TICKET 1: TOP 10 BANKERS</b> (High Conviction)",
         ]
 
-        if dual_res.tier_10.booking_result and dual_res.tier_10.booking_result.success:
+        if (
+            dual_res.tier_10.booking_result
+            and dual_res.tier_10.booking_result.success
+            and dual_res.tier_10.booking_result.booking_code
+        ):
             b10 = dual_res.tier_10.booking_result
             lines.extend([
                 f"🎟️ <b>SportyBet Code:</b> <code>{b10.booking_code}</code> <i>(tap to copy)</i>",
@@ -703,7 +707,11 @@ class PredictionBookingPipeline:
             "🚀 <b>TICKET 2: TOP 20 MEGA ACCUMULATOR</b> (Extended Slip)",
         ])
 
-        if dual_res.tier_20.booking_result and dual_res.tier_20.booking_result.success:
+        if (
+            dual_res.tier_20.booking_result
+            and dual_res.tier_20.booking_result.success
+            and dual_res.tier_20.booking_result.booking_code
+        ):
             b20 = dual_res.tier_20.booking_result
             lines.extend([
                 f"🎟️ <b>SportyBet Code:</b> <code>{b20.booking_code}</code> <i>(tap to copy)</i>",

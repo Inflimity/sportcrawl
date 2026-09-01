@@ -11,9 +11,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, time as dt_time, timedelta, timezone
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -95,6 +98,54 @@ class SportyBetBookerService:
             "operatortoken": "",
         }
 
+BOOKING_TZ = ZoneInfo("Africa/Lagos")
+
+
+def booking_horizon(now: Optional[datetime] = None) -> datetime:
+    """
+    Latest kickoff a booking may target.
+
+    Defaults to the end of the current day in WAT, because every ticket this
+    engine builds is "today's card". Set BOOKING_HORIZON_HOURS to a positive
+    number to use a rolling window of that many hours instead.
+    """
+    now = now or datetime.now(timezone.utc)
+    try:
+        hours = int(os.getenv("BOOKING_HORIZON_HOURS", "0"))
+    except ValueError:
+        hours = 0
+    if hours > 0:
+        return now + timedelta(hours=hours)
+    local_end = datetime.combine(now.astimezone(BOOKING_TZ).date(), dt_time.max, tzinfo=BOOKING_TZ)
+    return local_end.astimezone(timezone.utc)
+
+
+def within_booking_window(
+    event: dict[str, Any],
+    now: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+) -> bool:
+    """
+    True if the event kicks off between now and the horizon.
+
+    Nothing used to check this. A fixture screened for today was matched on team
+    names alone against the full upcoming card — ~1,100 events spanning weeks —
+    so a name that resolved to a different day's event was booked without
+    complaint, and a 2-odds banker shipped a leg kicking off the following night.
+    Events with no usable start time are kept: dropping them would silently
+    shrink the card if SportyBet ever changes the field.
+    """
+    raw = event.get("estimateStartTime")
+    if raw in (None, ""):
+        return True
+    try:
+        kickoff = datetime.fromtimestamp(int(raw) / 1000, tz=timezone.utc)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return True
+    now = now or datetime.now(timezone.utc)
+    return now <= kickoff <= (until or booking_horizon(now))
+
+
     async def fetch_available_events(self, max_pages: int = 12) -> list[dict[str, Any]]:
         """
         Fetch the upcoming football card from SportyBet.
@@ -143,8 +194,23 @@ class SportyBetBookerService:
         except Exception as e:
             logger.warning("Failed to fetch SportyBet events via API: %s", e)
 
-        logger.info("Retrieved %d bookable SportyBet events", len(events))
-        return events
+        # Confine the card to the booking window before anyone matches against
+        # it. Every consumer — pricing, shortlisting and booking — draws from
+        # this one call, so filtering here closes the wrong-day match on all of
+        # them at once.
+        now = datetime.now(timezone.utc)
+        until = booking_horizon(now)
+        in_window = [ev for ev in events if within_booking_window(ev, now, until)]
+        if len(in_window) != len(events):
+            logger.info(
+                "Retrieved %d bookable SportyBet events (%d dropped outside the booking window, horizon %s)",
+                len(in_window),
+                len(events) - len(in_window),
+                until.astimezone(BOOKING_TZ).strftime("%Y-%m-%d %H:%M %Z"),
+            )
+        else:
+            logger.info("Retrieved %d bookable SportyBet events", len(in_window))
+        return in_window
 
     async def fetch_event_markets(self, event_id: str) -> list[dict[str, Any]]:
         """Fetch full market list for a specific event from SportyBet API."""
@@ -290,6 +356,25 @@ class SportyBetBookerService:
                     if resp_data.get("bizCode") == 10000 or resp_data.get("isAvailable"):
                         data_block = resp_data.get("data", {})
                         share_code = data_block.get("shareCode")
+
+                        # A response can come back "available" without a code —
+                        # bizCode 10000 OR isAvailable is enough to land here.
+                        # Reporting success then produced a digest line reading
+                        # "SportyBet Code: None" and a betslip button pointing at
+                        # "?shareCode=None". A ticket with no code is not booked.
+                        if not share_code:
+                            logger.warning(
+                                "SportyBet returned no shareCode (bizCode=%s, isAvailable=%s); treating as unbooked",
+                                resp_data.get("bizCode"),
+                                resp_data.get("isAvailable"),
+                            )
+                            return BookingResult(
+                                success=False,
+                                booked_selections=booked,
+                                unmatched_selections=unmatched,
+                                error_message="SportyBet accepted the slip but returned no booking code",
+                            )
+
                         share_url = data_block.get("shareURL") or f"https://www.sportybet.com/{self.country_code}/?shareCode={share_code}"
                         
                         # Calculate exact odds from response outcomes if available

@@ -251,3 +251,31 @@ def test_startup_settings_read_from_the_environment(monkeypatch):
     s = Settings(telegram_bot_token="1:x", admin_chat_id=1)
     assert s.startup_prediction_autobook is True
     assert s.startup_prediction_enabled is False
+
+
+def test_digest_never_prints_a_none_booking_code():
+    """
+    A live Top 20 came back success=True with booking_code=None and the digest
+    printed "SportyBet Code: None" — a ticket that looked playable and was not.
+    """
+    from services.pipeline import PredictionBookingPipeline
+
+    def _pick(i):
+        return SimpleNamespace(
+            fixture=SimpleNamespace(home_name=f"H{i}", away_name=f"A{i}", label=f"H{i} v A{i}"),
+            selection="Over 1.5", market="Over/Under 1.5", probability=0.85,
+        )
+
+    dual = SimpleNamespace(
+        tier_10=SimpleNamespace(picks=[_pick(1)], booking_result=None),
+        tier_20=SimpleNamespace(
+            picks=[_pick(2)],
+            booking_result=SimpleNamespace(success=True, booking_code=None, total_odds="190.47"),
+        ),
+        two_odds=None,
+        draws=None,
+        filter_stats=SimpleNamespace(total=151),
+    )
+    digest = PredictionBookingPipeline.format_telegram_dual_digest(dual, "2026-09-01")
+    assert "None" not in digest
+    assert "Code" not in digest

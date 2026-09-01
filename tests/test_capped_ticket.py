@@ -220,3 +220,49 @@ def test_min_legs_holds_across_randomised_cards():
         assert ticket.combined_odds <= 2.0 + 1e-9
         # Eight legs between 1.10 and 1.45 always admit a pair under 2.00.
         assert ticket.size >= 2 and not ticket.note
+
+
+# ── Per-market cap ──────────────────────────────────────────────────────
+#
+# Ten legs in one market is not ten independent bets on ten fixtures; it is
+# one bet on one model, entered ten times. The cap bounds correlated model
+# error, which diversifying across fixtures alone does not.
+
+
+def _pick(home: str, away: str, selection: str, probability: float):
+    return _priced(home, away, selection, probability, 1.25).pick
+
+
+def test_cap_limits_how_many_legs_share_a_market():
+    from core.predictor.tickets import cap_per_market
+
+    picks = [_pick(f"H{i}", f"A{i}", "Over 1.5", 0.9 - i * 0.01) for i in range(10)]
+    picks += [_pick(f"G{i}", f"B{i}", "GG", 0.7 - i * 0.01) for i in range(5)]
+
+    kept = cap_per_market(picks, max_per_market=6, limit=10)
+    assert sum(p.selection == "Over 1.5" for p in kept) == 6
+    assert len(kept) == 10
+
+
+def test_cap_preserves_ranking_within_a_market():
+    from core.predictor.tickets import cap_per_market
+
+    picks = [_pick(f"H{i}", f"A{i}", "Over 1.5", 0.9 - i * 0.01) for i in range(5)]
+    kept = cap_per_market(picks, max_per_market=3)
+    assert [p.probability for p in kept] == pytest.approx([0.90, 0.89, 0.88])
+
+
+def test_cap_tops_back_up_rather_than_shipping_a_short_ticket():
+    """A Top 10 that quietly returns 6 changes the payout more than the cap helps."""
+    from core.predictor.tickets import cap_per_market
+
+    picks = [_pick(f"H{i}", f"A{i}", "Over 1.5", 0.9) for i in range(10)]
+    kept = cap_per_market(picks, max_per_market=4, limit=10)
+    assert len(kept) == 10
+
+
+def test_cap_of_zero_is_a_no_op():
+    from core.predictor.tickets import cap_per_market
+
+    picks = [_pick(f"H{i}", f"A{i}", "Over 1.5", 0.9) for i in range(5)]
+    assert cap_per_market(picks, max_per_market=0) == picks

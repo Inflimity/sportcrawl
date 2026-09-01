@@ -18,6 +18,7 @@ from core.booker_engine import BookerEngine
 from core.predictor.enrich import fetch_team_forms
 from core.predictor.filter import FilterStats, Fixture, filter_fixtures
 from core.predictor.format import format_picks
+from core.predictor.odds import PricedPick
 from core.predictor.screen import Pick, screen_fixtures
 from core.predictor.tickets import Ticket
 from services.sportybet_service import BookingResult
@@ -290,6 +291,10 @@ class PredictionBookingPipeline:
         two_odds_short_window: int = 5,
         two_odds_markets: Optional[list[str]] = None,
         two_odds_per_fixture: int = 3,
+        top_rank_by_edge: bool = False,
+        top_min_edge: float = 0.0,
+        top_max_per_market: int = 0,
+        top_pool_depth: int = 30,
     ) -> DualPipelineResult:
         """
         Generate BOTH Top 10 Bankers and Top 20 Mega Accumulator tickets simultaneously.
@@ -333,8 +338,41 @@ class PredictionBookingPipeline:
             empty = PipelineResult(picks=[], filter_stats=stats, picks_text="")
             return DualPipelineResult(tier_10=empty, tier_20=empty, filter_stats=stats)
 
+        # ── Price the shortlist ──────────────────────────────────────────
+        #
+        # Top 10/20 used to book without ever seeing a price: screened by
+        # probability, sliced, booked. Three consequences followed from that
+        # one omission. The ticket filled with a single market, because ranking
+        # on probability alone always converges on the highest base rate.
+        # Nothing compared the model's number against the number the price
+        # implies, so an implausible edge could not announce itself. And
+        # `--min-edge`, which PROJECT_STATE calls the quality control for this
+        # engine, was never wired into the tickets actually being booked.
+        #
+        # Costs no SofaScore traffic — attach_odds uses the booker's SportyBet
+        # service and caches markets per event.
+        priced_pool = await self._price_shortlist(all_screened, depth=max(top_pool_depth, 20))
+
+        # Defaults are deliberately inert: ranking and filtering on edge is
+        # only as good as the probability feeding it, and this engine's Over
+        # 1.5 rate has never been graded. Until it is, the price is *shown*
+        # rather than acted on. Turn these on once there is a measured rate.
+        ranked = self._rank_picks(
+            priced_pool,
+            rank_by_edge=top_rank_by_edge,
+            min_edge=top_min_edge,
+        )
+        if not ranked:
+            logger.warning(
+                "Edge filter at %.3f removed every pick; falling back to the "
+                "probability ranking rather than shipping nothing.", top_min_edge,
+            )
+            ranked = all_screened
+
+        from core.predictor.tickets import cap_per_market
+
         # Top 10 Picks
-        picks_10 = all_screened[:10]
+        picks_10 = cap_per_market(ranked, top_max_per_market, limit=10)
         picks_text_10 = format_picks(picks_10)
         book_res_10 = None
         if auto_book and picks_10:
@@ -348,7 +386,7 @@ class PredictionBookingPipeline:
         )
 
         # Top 20 Picks
-        picks_20 = all_screened[:20]
+        picks_20 = cap_per_market(ranked, top_max_per_market, limit=20)
         picks_text_20 = format_picks(picks_20)
         book_res_20 = None
         if auto_book and picks_20:
@@ -387,6 +425,53 @@ class PredictionBookingPipeline:
             tier_10=tier_10, tier_20=tier_20, filter_stats=stats,
             draws=draws, two_odds=two_odds,
         )
+
+    async def _price_shortlist(self, picks: list[Pick], depth: int = 30) -> list["PricedPick"]:
+        """
+        Attach the live SportyBet price to the top ``depth`` screened picks.
+
+        Failures are not fatal. A pick the bookmaker does not list comes back
+        with ``odds`` unset and is still bookable through the normal path — the
+        price is here to inform ranking and the digest, not to gate selection.
+        """
+        from core.predictor.odds import attach_odds
+
+        try:
+            return await attach_odds(picks[:depth], service=self.booker.service)
+        except Exception as e:
+            logger.warning("Could not price the shortlist (%s); continuing unpriced.", e)
+            from core.predictor.odds import PricedPick
+            return [PricedPick(pick=p, error=str(e)) for p in picks[:depth]]
+
+    @staticmethod
+    def _rank_picks(
+        priced: list["PricedPick"],
+        rank_by_edge: bool = False,
+        min_edge: float = 0.0,
+    ) -> list[Pick]:
+        """
+        Order the shortlist, optionally on edge against the live price.
+
+        Default is the existing probability order, unchanged. Edge ranking is
+        opt-in for a reason worth stating: edge is
+        ``model probability - implied probability``, so it inherits every bias
+        in the model probability. If the model is systematically ten points
+        optimistic on a market, every pick in that market shows ten points of
+        spurious edge and a min-edge filter will wave through exactly the picks
+        it exists to catch. A filter is only as trustworthy as the number it
+        filters on, and this engine's dominant market is ungraded.
+        """
+        kept = list(priced)
+
+        if min_edge > 0:
+            kept = [p for p in kept if p.edge is not None and p.edge >= min_edge]
+
+        if rank_by_edge:
+            # Unpriced picks sort last: no price means no measurable edge, and
+            # guessing one would defeat the point of ranking on it.
+            kept.sort(key=lambda p: (p.edge is not None, p.edge or 0.0), reverse=True)
+
+        return [p.pick for p in kept]
 
     async def build_two_odds_ticket(
         self,
@@ -729,11 +814,24 @@ class PredictionBookingPipeline:
                 else ""
             )
 
-        lines.append("\n<b>📋 Draw Selections:</b>")
-        for idx, p in enumerate(draws.picks, 1):
+        # Per ticket, not the whole screened pool. Listing every pick under a
+        # single ticket's code meant the reader could not tell which legs the
+        # code actually held — a 5-fold header over seven selections.
+        for entry in draws.tickets:
+            lines.append(f"\n<b>📋 {entry.ticket.label} selections:</b>")
+            for idx, leg in enumerate(entry.ticket.legs, 1):
+                lines.append(
+                    f"<b>{idx}.</b> {leg.fixture.home_name} vs {leg.fixture.away_name} "
+                    f"➔ <b>Draw</b> <i>({round(leg.probability * 100)}%)</i>"
+                )
+
+        booked = {id(leg) for e in draws.tickets for leg in e.ticket.legs}
+        spare = [p for p in draws.picks if id(p) not in booked]
+        if spare:
             lines.append(
-                f"<b>{idx}.</b> {p.fixture.home_name} vs {p.fixture.away_name} "
-                f"➔ <b>Draw</b> <i>({round(p.probability * 100)}%)</i>"
+                f"\n<i>{len(spare)} further pick(s) screened but not on any ticket: "
+                + ", ".join(p.fixture.label for p in spare)
+                + "</i>"
             )
 
         lines.append(

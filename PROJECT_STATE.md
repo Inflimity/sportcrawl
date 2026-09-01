@@ -97,6 +97,80 @@ and booking path, but **none** of the main engine's floors, calibration or resul
 3. `LEAGUE_DRAW_PRIOR` is deliberately empty — filling it from recollection rather
    than measurement is what produced the `max(0.70, ...)` Over 1.5 bug.
 
+### 1b-ii. Price awareness on Tickets 1 & 2 (`services/pipeline.py`)
+
+Until 1 Sep 2026 the Top 10/20 path booked without ever seeing a price:
+`screen_fixtures` ranked on model probability, the list was sliced, and the slice
+was booked. Three symptoms, one cause:
+
+- **The ticket filled with one market.** Ranking on probability alone converges
+  on whichever market carries the highest base rate. Over 1.5 is a superset of
+  Over 2.5 and beats GG and 1X almost everywhere, so it wins nearly every
+  fixture by construction. A Top 10 of 10x Over 1.5 is a selection-rule
+  artefact, not a read on the card.
+- **An implausible edge could not announce itself.** Nothing compared the
+  model's number against the number the price implies.
+- **`--min-edge` was never wired in**, though this document calls it the
+  engine's quality control.
+
+`_price_shortlist` now attaches live odds to the top `top_pool_depth` (30)
+picks — no SofaScore cost; `attach_odds` uses the booker's SportyBet service and
+caches markets per event. `_rank_picks` can then rank or filter on edge, and
+`cap_per_market` (in `tickets.py`) bounds how many legs share a market.
+
+**All three default to INERT and that is deliberate.** Edge is
+`model probability − implied probability`, so it inherits every bias in the
+model probability. A min-edge filter over a biased model waves through exactly
+the picks it exists to catch. Over 1.5 now dominates both tickets and has never
+been graded, so the price is *shown* rather than acted on until
+`tools/backtest_markets.py --grade` produces a measured rate. Suggested values
+once it has: `TOP_RANK_BY_EDGE=true TOP_MIN_EDGE=0.03 TOP_MAX_PER_MARKET=6`.
+
+Settings: `top_rank_by_edge`, `top_min_edge`, `top_max_per_market`,
+`top_pool_depth`.
+
+### 1b-iii. Market grading harness (`tools/backtest_markets.py`)
+
+Replaces the lost `scratchpad/multiday.py`, committed this time because the
+number it produces is what every ticket's expected value rests on.
+
+- `--rates` — realised base rates from stored scorelines. **Zero network.**
+- `--grade` — re-screens past matchdays and grades the picks the model would
+  have made. Fetches SofaScore history per team (`before_ts` set to the day's
+  earliest kickoff, so no fixture sees any result from its own matchday), so
+  **run it on the VPS**, not a laptop whose IP has been throttled for this before.
+
+Outcomes always come from the local match DB, never a live scrape, so grading is
+reproducible and free to repeat.
+
+**Measured 1 Sep 2026 on 2,389 finished matches (exclusions applied, which is
+what `allow_unlisted=True` actually selects from), avg 3.79 goals/match:**
+
+| market | `BASE_RATES` prior | realised | |
+|---|---|---|---|
+| Over 1.5 | 0.75 | **84.7%** | prior too low |
+| Over 2.5 | 0.52 | **68.1%** | prior badly too low |
+| GG | 0.52 | 58.8% | low |
+| 1 | 0.44 | 46.5% | close |
+| 2 | 0.29 | 36.8% | low |
+| X | 0.27 | **16.7%** | prior far too high |
+
+Two consequences not yet acted on:
+
+1. **`form_pick.BASE_RATES` are shrink targets measured against a different
+   population.** This pool is high-scoring amateur-heavy football, not the
+   top-flight football the priors describe. Shrinking toward them drags goal
+   markets down and draws up.
+2. **The draw track assumes ~27-30% draws; this pool runs 16.7%.** Selection
+   should lift that — the draw screener targets even, low-scoring fixtures — but
+   the gap is large enough to check before staking.
+
+**Still outstanding: Over 1.5 has never been graded.** The 142-pick sample is
+1X 73, Over 2.5 36, X2 15, GG 18 — all 142, none Over 1.5. It is now essentially
+the entire Top 10/20 output. `--rates` bounds the problem (a base rate of 84.7%
+against a Ticket 1 break-even of 79.8%); only `--grade` says whether selection
+adds anything on top.
+
 ### 1c. Ticket 4 — the capped "2 odds" banker (`core/predictor/form_pick.py`, `tickets.py`)
 
 At most `two_odds_max_legs` (3) and at least `two_odds_min_legs` (**2**) legs whose

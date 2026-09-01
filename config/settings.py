@@ -63,6 +63,23 @@ class Settings(BaseSettings):
     # of being dropped when its best read is priced beyond the cap.
     two_odds_per_fixture: int = 3
 
+    # ── Tickets 1 & 2: price awareness ──────────────────────────────────
+    # The Top 10/20 path books on model probability alone and never sees a
+    # price. These wire the price in. All three default to INERT — the price
+    # is shown in the digest but does not change what is selected — because
+    # edge is `model probability - implied probability` and inherits every
+    # bias in the model probability. Over 1.5 now dominates both tickets and
+    # its hit rate has never been graded, so a min-edge filter would currently
+    # wave through precisely the picks it exists to catch.
+    #
+    # Turn these on once `python -m tools.backtest_markets` has produced a
+    # measured Over 1.5 rate. Suggested first values once it has:
+    #   TOP_RANK_BY_EDGE=true  TOP_MIN_EDGE=0.03  TOP_MAX_PER_MARKET=6
+    top_rank_by_edge: bool = False       # rank on edge instead of probability
+    top_min_edge: float = 0.0            # drop picks below this edge (0 = off)
+    top_max_per_market: int = 0          # max legs of one market (0 = no cap)
+    top_pool_depth: int = 30             # how many picks get priced
+
     # ── Top / Featured Leagues & Competitions ────────────────────────────
     # Matches in these tournaments are prioritized in digests & alerts
     featured_leagues: str | list[str] = [

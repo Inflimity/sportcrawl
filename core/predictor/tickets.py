@@ -408,3 +408,54 @@ def build_capped_ticket(
         label=label,
         note=note,
     )
+
+
+def cap_per_market(
+    picks: "Sequence[Pick]",
+    max_per_market: int,
+    limit: Optional[int] = None,
+) -> list[Pick]:
+    """
+    Keep a ranked list from filling with a single market.
+
+    The case for this is not outcome variance — ten distinct fixtures really do
+    settle independently. It is **correlated model error**. When every leg is
+    the same market, one biased estimate is not one bad leg among ten, it is
+    ten bad legs. A Top 10 of nothing but Over 1.5 is a bet that the Over 1.5
+    model is right, entered ten times, not a diversified card.
+
+    That concentration is a selection-rule artefact rather than a read on the
+    day: ranking by probability alone always converges on whichever market
+    carries the highest base rate, and Over 1.5 is a superset of Over 2.5 so it
+    wins nearly every fixture by construction.
+
+    Order is preserved, so the best pick of each market still comes first.
+    ``max_per_market <= 0`` disables the cap.
+    """
+    if max_per_market <= 0:
+        kept = list(picks)
+        return kept[:limit] if limit else kept
+
+    counts: dict[str, int] = {}
+    kept: list[Pick] = []
+    overflow: list[Pick] = []
+
+    for pick in picks:
+        seen = counts.get(pick.selection, 0)
+        if seen < max_per_market:
+            counts[pick.selection] = seen + 1
+            kept.append(pick)
+        else:
+            overflow.append(pick)
+
+    # If the cap starved the list, top back up from what it rejected rather
+    # than ship a short ticket. A Top 10 that quietly returns 6 legs changes
+    # the payout by more than the diversification was worth.
+    if limit and len(kept) < limit:
+        kept.extend(overflow[: limit - len(kept)])
+
+    logger.info(
+        "Market cap %d: %d picks kept across %d markets (%d deferred).",
+        max_per_market, len(kept), len(counts), len(overflow),
+    )
+    return kept[:limit] if limit else kept

@@ -732,7 +732,11 @@ class TelegramNotifier:
                     two_odds_source=self._settings.two_odds_source,
                     two_odds_short_window=self._settings.two_odds_short_window,
                     two_odds_markets=self._settings.two_odds_markets,
-                    two_odds_per_fixture=self._settings.two_odds_per_fixture
+                    two_odds_per_fixture=self._settings.two_odds_per_fixture,
+                    top_rank_by_edge=self._settings.top_rank_by_edge,
+                    top_min_edge=self._settings.top_min_edge,
+                    top_max_per_market=self._settings.top_max_per_market,
+                    top_pool_depth=self._settings.top_pool_depth
                 )
                 text_response = PredictionBookingPipeline.format_telegram_dual_digest(dual_res, today_str)
                 keyboard_rows = []
@@ -1026,7 +1030,11 @@ class TelegramNotifier:
                     two_odds_source=self._settings.two_odds_source,
                     two_odds_short_window=self._settings.two_odds_short_window,
                     two_odds_markets=self._settings.two_odds_markets,
-                    two_odds_per_fixture=self._settings.two_odds_per_fixture
+                    two_odds_per_fixture=self._settings.two_odds_per_fixture,
+                    top_rank_by_edge=self._settings.top_rank_by_edge,
+                    top_min_edge=self._settings.top_min_edge,
+                    top_max_per_market=self._settings.top_max_per_market,
+                    top_pool_depth=self._settings.top_pool_depth
             )
 
             if dual_res.tier_10.picks or dual_res.tier_20.picks:

@@ -80,24 +80,6 @@ class BookingResult:
         }
 
 
-class SportyBetBookerService:
-    """Automates SportyBet betslip creation and booking code generation via official API."""
-
-    def __init__(self, country_code: str = "ng", headless: bool = True):
-        self.country_code = country_code.lower()
-        self.headless = headless
-        self.base_url = f"https://www.sportybet.com/{self.country_code}/sport/football"
-        self.api_base = f"https://www.sportybet.com/api/{self.country_code}"
-        self.http_headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Content-Type": "application/json;charset=UTF-8",
-            "Referer": f"https://www.sportybet.com/{self.country_code}/sport/football",
-            "Origin": f"https://www.sportybet.com",
-            "operatortoken": "",
-        }
-
 BOOKING_TZ = ZoneInfo("Africa/Lagos")
 
 
@@ -145,6 +127,24 @@ def within_booking_window(
     now = now or datetime.now(timezone.utc)
     return now <= kickoff <= (until or booking_horizon(now))
 
+
+class SportyBetBookerService:
+    """Automates SportyBet betslip creation and booking code generation via official API."""
+
+    def __init__(self, country_code: str = "ng", headless: bool = True):
+        self.country_code = country_code.lower()
+        self.headless = headless
+        self.base_url = f"https://www.sportybet.com/{self.country_code}/sport/football"
+        self.api_base = f"https://www.sportybet.com/api/{self.country_code}"
+        self.http_headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Content-Type": "application/json;charset=UTF-8",
+            "Referer": f"https://www.sportybet.com/{self.country_code}/sport/football",
+            "Origin": f"https://www.sportybet.com",
+            "operatortoken": "",
+        }
 
     async def fetch_available_events(self, max_pages: int = 12) -> list[dict[str, Any]]:
         """

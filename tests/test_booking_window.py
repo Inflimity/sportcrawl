@@ -89,3 +89,36 @@ def test_horizon_env_override_uses_a_rolling_window(now, monkeypatch):
 def test_bad_env_value_falls_back_to_end_of_day(now, monkeypatch):
     monkeypatch.setenv("BOOKING_HORIZON_HOURS", "banana")
     assert booking_horizon(now).astimezone(BOOKING_TZ).hour == 23
+
+
+def test_the_service_class_still_owns_its_methods():
+    """
+    Guard against a dedent silently emptying the class.
+
+    Module-level helpers were once inserted *inside* the class body at column 0.
+    That ended the class, and because the methods below were indented 4 spaces
+    they were re-parsed as nested functions of the preceding helper. The file
+    compiled, every import succeeded, and the failure only surfaced at runtime
+    as "'SportyBetBookerService' object has no attribute 'fetch_available_events'"
+    the next time someone ran /predict.
+    """
+    from services.sportybet_service import SportyBetBookerService
+
+    for name in ("fetch_available_events", "fetch_event_markets", "generate_booking_code"):
+        assert callable(getattr(SportyBetBookerService, name, None)), (
+            f"{name} is not a method of SportyBetBookerService — "
+            "something above it in the file has broken the class body"
+        )
+
+
+def test_booking_window_helpers_are_module_level():
+    """They must sit outside the class, or the class swallows them."""
+    import inspect
+
+    from services import sportybet_service as svc
+
+    for fn in (svc.booking_horizon, svc.within_booking_window):
+        assert inspect.isfunction(fn)
+        assert fn.__qualname__ == fn.__name__, (
+            f"{fn.__name__} is nested inside {fn.__qualname__} — it should be top-level"
+        )

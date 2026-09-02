@@ -58,3 +58,21 @@ def test_squad_mismatch_allows_two_first_teams():
 
 def test_squad_mismatch_allows_two_reserve_sides():
     assert not squad_mismatch("Atletico Madrid B", "Atletico Madrid B")
+
+
+def test_outcomes_from_events_reads_finished_scores():
+    from tools.backtest_markets import outcomes_from_events
+
+    raw = {
+        1: [
+            {"id": 111, "status": {"type": "finished"},
+             "homeScore": {"current": 2}, "awayScore": {"current": 1}},
+            {"id": 222, "status": {"type": "notstarted"},
+             "homeScore": {}, "awayScore": {}},
+            {"id": 333, "status": {"type": "inprogress"},
+             "homeScore": {"current": 1}, "awayScore": {"current": 0}},
+        ]
+    }
+    out = outcomes_from_events(raw)
+    assert out == {111: (2, 1)}          # only the finished match
+    assert 222 not in out and 333 not in out   # never grade an unplayed or live match

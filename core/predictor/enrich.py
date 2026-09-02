@@ -216,6 +216,7 @@ async def fetch_team_forms(
     batch_size: int = 8,
     settings: Optional[Settings] = None,
     before_ts: Optional[int] = None,
+    raw_out: Optional[dict[int, list[dict[str, Any]]]] = None,
 ) -> dict[int, TeamForm]:
     """
     Fetch and compute recent form for every team appearing in ``fixtures``.
@@ -227,6 +228,15 @@ async def fetch_team_forms(
     ``before_ts`` restricts form to matches played before that unix timestamp;
     pass the fixture date when backtesting so results from after the fixture
     cannot leak into its own prediction.
+
+    ``raw_out``, if given, is filled with the untouched per-team event lists.
+    Purely an out-parameter for offline analysis: backtesting needs the *result*
+    of the fixture it is grading, and that match is already in this response —
+    it is simply cut away by ``before_ts`` when building form. Reading it here
+    costs no extra request and removes any dependence on the local database,
+    which never records ~39% of results and misses the low-scoring leagues
+    disproportionately. Leave it None (the default) and nothing changes: the
+    live prediction path is untouched by this parameter.
     """
     names: dict[int, str] = {}
     for fx in fixtures:
@@ -359,6 +369,9 @@ async def fetch_team_forms(
             # Same events, shorter cut. No extra request.
             form.short = _build_form(team_id, name, events, short_window, before_ts=before_ts)
         forms[team_id] = form
+
+    if raw_out is not None:
+        raw_out.update(raw_by_team)
 
     reliable = sum(1 for f in forms.values() if f.is_reliable)
     logger.info("Built form for %d teams (%d with a usable sample)", len(forms), reliable)

@@ -421,10 +421,24 @@ class PredictionBookingPipeline:
             # identical data, and load is what got the local IP throttled.
             draws = await self.run_draw_pipeline(fixtures, forms, auto_book=auto_book)
 
-        return DualPipelineResult(
+        result = DualPipelineResult(
             tier_10=tier_10, tier_20=tier_20, filter_stats=stats,
             draws=draws, two_odds=two_odds,
         )
+
+        # Record every leg with the price it was booked at. SportyBet keeps no
+        # odds history, so a price not captured now is gone — which is why
+        # "does Ticket 4 beat its price?" has never been answerable. Outcomes
+        # can always be recovered from SofaScore later; the price cannot.
+        # log_result swallows its own errors: a logging fault must never turn
+        # into a failed digest.
+        from core.ticket_log import log_result
+
+        rows = log_result(result)
+        if rows:
+            logger.info("Ticket log: recorded %d legs with prices.", rows)
+
+        return result
 
     async def _price_shortlist(self, picks: list[Pick], depth: int = 30) -> list["PricedPick"]:
         """

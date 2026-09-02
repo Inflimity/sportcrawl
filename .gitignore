@@ -45,3 +45,8 @@ browser_profiles/
 *~
 .DS_Store
 Thumbs.db
+
+# Ticket price log — machine-generated, and it is per-deployment:
+# the VPS log is the real record, a local one is only ever a test.
+logs/
+*.jsonl

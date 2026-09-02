@@ -221,12 +221,45 @@ def report_rates(
 # ── Mode 2: grade the model's actual picks ──────────────────────────────
 
 
+
+def outcomes_from_events(
+    raw_by_team: dict[int, list[dict[str, Any]]]
+) -> dict[int, tuple[int, int]]:
+    """
+    Final scores keyed by SofaScore event id, read from team histories.
+
+    A team's history lists every match it has played, each with both scores and
+    the event id the fixtures are keyed on, so the fixture being graded appears
+    in its own participants' histories once played. Only finished matches count
+    — a postponed or in-play entry has no final score and must not be graded.
+    """
+    out: dict[int, tuple[int, int]] = {}
+    for events in raw_by_team.values():
+        for ev in events or []:
+            status = ((ev.get("status") or {}).get("type") or "").lower()
+            if status and status != "finished":
+                continue
+            home = (ev.get("homeScore") or {}).get("current")
+            away = (ev.get("awayScore") or {}).get("current")
+            eid = ev.get("id")
+            if eid is None or home is None or away is None:
+                continue
+            try:
+                out[int(eid)] = (int(home), int(away))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
 async def grade_picks(
     results: list[dict[str, Any]],
     form_matches: int = 10,
     top_n: int = 50,
     sample_per_day: int = 40,
     seed: int = 7,
+    selector: str = "screen",
+    short_window: int = 5,
+    markets: Optional[list[str]] = None,
 ) -> str:
     """
     Re-screen each matchday and grade the picks the model would have made.
@@ -250,7 +283,20 @@ async def grade_picks(
     rng = random.Random(seed)
     from core.predictor.enrich import fetch_team_forms
     from core.predictor.filter import Fixture
+    from core.predictor.form_pick import screen_form
     from core.predictor.screen import screen_fixtures
+
+    # Ticket 4 is NOT built by screen_fixtures. It is built by form_pick, which
+    # reads each side's last five games off the form guide and takes the best
+    # market. Grading the Poisson screener therefore says nothing about it —
+    # they share no selection code. This mode grades the method that actually
+    # builds the ticket.
+    #
+    # It grades screen_form's one-pick-per-fixture output rather than replaying
+    # the ticket builder, because the builder also sees price and SportyBet
+    # keeps no price history. Legs are the right unit anyway: ticket-level
+    # grading over 16 matchdays would give 16 data points.
+    use_form = selector == "form"
 
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in results:
@@ -259,6 +305,11 @@ async def grade_picks(
     market_tally: dict[str, Tally] = defaultdict(Tally)
     band_tally: dict[tuple[float, float], Tally] = defaultdict(Tally)
     graded = 0
+    # Every finished match seen in any team history, for the base rate. Must be
+    # measured the same way as the hit rate or the comparison is meaningless:
+    # scoring picks from SofaScore while taking the base rate from a database
+    # that drops the low-scoring leagues flatters neither number honestly.
+    seen_matches: dict[int, tuple[int, int]] = {}
 
     for day in sorted(by_day):
         day_rows = by_day[day]
@@ -292,13 +343,39 @@ async def grade_picks(
 
         logger.info("Matchday %s: %d fixtures (~%d SofaScore fetches)",
                     day, len(fixtures), len(fixtures) * 2)
+        raw_events: dict[int, list[dict[str, Any]]] = {}
         forms = await fetch_team_forms(
-            fixtures, form_matches=form_matches, before_ts=before_ts
+            fixtures,
+            form_matches=form_matches,
+            short_window=short_window if use_form else None,
+            before_ts=before_ts,
+            raw_out=raw_events,
         )
-        picks = screen_fixtures(fixtures=fixtures, forms=forms, limit=top_n, max_per_fixture=1)
+        if use_form:
+            picks = screen_form(fixtures=fixtures, forms=forms, prefer_short=True,
+                                limit=top_n, markets=markets)
+        else:
+            picks = screen_fixtures(fixtures=fixtures, forms=forms, limit=top_n,
+                                    max_per_fixture=1)
 
-        scores = {int(r["match_id"]): (int(r["home_score"]), int(r["away_score"]))
-                  for r in day_rows}
+        # Outcomes come from SofaScore, not the local database.
+        #
+        # The DB never records ~39% of results — the scraper polls every two
+        # hours and never revisits a match it has passed — and the gap is not
+        # random: the competitions it misses average 2.00 goals against 3.60
+        # for the ones it covers. Grading on the recorded 61% therefore scored
+        # the model against a pool skewed high, which inflates every Over 1.5
+        # number. The fixture's own result is already in the team-history
+        # response fetched for form; it is simply cut off by before_ts. Reading
+        # it here costs no request and is complete.
+        day_outcomes = outcomes_from_events(raw_events)
+        seen_matches.update(day_outcomes)
+        scores = dict(day_outcomes)
+        db_scores = {int(r["match_id"]): (int(r["home_score"]), int(r["away_score"]))
+                     for r in day_rows
+                     if r["home_score"] is not None and r["away_score"] is not None}
+        for mid, sc in db_scores.items():
+            scores.setdefault(mid, sc)
         for pick in picks:
             actual = scores.get(pick.fixture.match_id)
             if not actual:
@@ -314,26 +391,37 @@ async def grade_picks(
                     break
             graded += 1
 
-    lines = [
-        "=" * 74,
-        f"GRADED MODEL PICKS — {graded} picks over {len(by_day)} matchdays",
-        "=" * 74,
-        "",
-        f"{'market':<12}{'n':>6}{'hit rate':>11}{'  vs base rate':>16}",
-        "-" * 74,
-    ]
-
     base = {m: Tally() for m in market_tally}
-    for r in results:
-        h, a = int(r["home_score"]), int(r["away_score"])
+    base_pool = (list(seen_matches.values()) if seen_matches
+                 else [(int(r["home_score"]), int(r["away_score"])) for r in results
+                       if r["home_score"] is not None and r["away_score"] is not None])
+    for h, a in base_pool:
         for m in base:
             won = grade(m, h, a)
             if won is not None:
                 base[m].add(won)
 
+    lines = [
+        "=" * 74,
+        (f"GRADED FORM PICKS (Ticket 4 method) — {graded} legs over {len(by_day)} matchdays"
+         if use_form else
+         f"GRADED MODEL PICKS — {graded} picks over {len(by_day)} matchdays"),
+        "=" * 74,
+        "",
+        f"base rate measured on {len(base_pool):,} finished matches "
+        f"({'SofaScore histories' if seen_matches else 'local database'}).",
+        "",
+        f"{'market':<12}{'n':>6}{'hit rate':>11}{'  vs base rate':>16}",
+        "-" * 74,
+    ]
+
     for m, t in sorted(market_tally.items(), key=lambda kv: -kv[1].total):
         b = base[m].rate
-        delta = (t.rate - b) if (t.rate is not None and b is not None) else None
+        # Both rates are fractions; a percentage-point gap is their difference
+        # scaled by 100. Printing the raw fraction as "pp" showed a real +13.0pp
+        # selection edge as "+0.1pp" — small enough to read as "adds nothing",
+        # which is the exact conclusion this column exists to support.
+        delta = ((t.rate - b) * 100) if (t.rate is not None and b is not None) else None
         edge = f"{b:>7.1%} ({delta:+.1f}pp)" if delta is not None else "—"
         lines.append(f"{m:<12}{t.total:>6}{t.rate:>10.1%}{edge:>18}")
 
@@ -363,6 +451,13 @@ def main() -> None:
     ap.add_argument("--to", dest="date_to", help="YYYY-MM-DD")
     ap.add_argument("--rates", action="store_true",
                     help="realised base rates from stored scores (no network)")
+    ap.add_argument("--grade-form", action="store_true",
+                    help="grade the form-guide method that builds Ticket 4 "
+                         "(NOT the Poisson screener behind Tickets 1 and 2)")
+    ap.add_argument("--short-window", type=int, default=5,
+                    help="matches per side the form read uses (default 5)")
+    ap.add_argument("--markets", help="comma-separated market whitelist, "
+                                      "e.g. \"Over 1.5,GG,Over 2.5,1,2,X\"")
     ap.add_argument("--grade", action="store_true",
                     help="re-screen and grade the model's picks (fetches SofaScore)")
     ap.add_argument("--by-competition", action="store_true")
@@ -381,13 +476,13 @@ def main() -> None:
     if not results:
         print("No finished matches with scorelines in that range.")
         return
-    if not args.rates and not args.grade:
+    if not args.rates and not args.grade and not args.grade_form:
         args.rates = True
 
     if args.rates:
         print(report_rates(results, by_competition=args.by_competition,
                            min_sample=args.min_sample))
-    if args.grade:
+    for selector in [s for s, on in (("screen", args.grade), ("form", args.grade_form)) if on]:
         print()
         days = len({str(r["start_time"])[:10] for r in results})
         per_day = args.sample_per_day or (len(results) // max(days, 1))
@@ -398,9 +493,14 @@ def main() -> None:
             print("That is a lot. Narrow with --from/--to or lower "
                   "--sample-per-day if this IP matters.")
         print()
+        whitelist = ([m.strip() for m in args.markets.split(",") if m.strip()]
+                     if args.markets else None)
         print(asyncio.run(grade_picks(results, form_matches=args.form_matches,
                                       top_n=args.top,
-                                      sample_per_day=args.sample_per_day)))
+                                      sample_per_day=args.sample_per_day,
+                                      selector=selector,
+                                      short_window=args.short_window,
+                                      markets=whitelist)))
 
 
 if __name__ == "__main__":

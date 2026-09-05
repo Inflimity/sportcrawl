@@ -718,7 +718,7 @@ class TelegramNotifier:
     async def _process_booking_request(self, update: Update, text: str) -> None:
         """Execute booking flow and send formatted result."""
         from core.booker_engine import BookerEngine
-        from core.prediction_parser import parse_prediction_text
+        from core.prediction_parser import parse_prediction_text, unparsed_lines
 
         parsed_bets = parse_prediction_text(text)
         if not parsed_bets:
@@ -736,6 +736,18 @@ class TelegramNotifier:
             engine = BookerEngine(country_code="ng", headless=True)
             result = await engine.book_predictions(text)
             response_text = BookerEngine.format_telegram_response(result, parsed_bets)
+
+            # Lines this parser could not read never become bets, so without
+            # this they disappear from the slip with nothing said about them.
+            skipped = unparsed_lines(text)
+            if skipped:
+                response_text += "\n\n<b>❓ Lines I could not read:</b>"
+                for line in skipped[:10]:
+                    response_text += f"\n• <code>{html_lib.escape(line)}</code>"
+                response_text += (
+                    "\n<i>Use the form: Home vs Away - Market "
+                    "(e.g. Arsenal vs Chelsea - Over 2.5)</i>"
+                )
 
             keyboard = None
             if result.success and result.share_url:
@@ -885,7 +897,10 @@ class TelegramNotifier:
 
             if req_n in (10, 20):
                 # Single tier request
-                result = await pipeline.run_pipeline(raw_matches, top_n=req_n, auto_book=True)
+                result = await pipeline.run_pipeline(
+                    raw_matches, top_n=req_n, auto_book=True,
+                    require_allowlisted_leagues=self._settings.require_allowlisted_leagues,
+                )
                 title = f"🎯 Today's Top {req_n} Banker Predictions ({today_str})"
                 booked_codes = _collect_booking_codes(single=result)
                 text_response = PredictionBookingPipeline.format_telegram_digest(result, title)
@@ -909,10 +924,14 @@ class TelegramNotifier:
                     two_odds_short_window=self._settings.two_odds_short_window,
                     two_odds_markets=self._settings.two_odds_markets,
                     two_odds_per_fixture=self._settings.two_odds_per_fixture,
+                    two_odds_max_per_market=self._settings.two_odds_max_per_market,
                     top_rank_by_edge=self._settings.top_rank_by_edge,
                     top_min_edge=self._settings.top_min_edge,
                     top_max_per_market=self._settings.top_max_per_market,
-                    top_pool_depth=self._settings.top_pool_depth
+                    top_pool_depth=self._settings.top_pool_depth,
+                    require_allowlisted_leagues=self._settings.require_allowlisted_leagues,
+                    form_tier_priority=self._settings.form_tier_priority,
+                    form_max_tier=self._settings.form_max_tier,
                 )
                 booked_codes = _collect_booking_codes(dual=dual_res)
                 text_response = PredictionBookingPipeline.format_telegram_dual_digest(dual_res, today_str)
@@ -1231,10 +1250,14 @@ class TelegramNotifier:
                     two_odds_short_window=self._settings.two_odds_short_window,
                     two_odds_markets=self._settings.two_odds_markets,
                     two_odds_per_fixture=self._settings.two_odds_per_fixture,
+                    two_odds_max_per_market=self._settings.two_odds_max_per_market,
                     top_rank_by_edge=self._settings.top_rank_by_edge,
                     top_min_edge=self._settings.top_min_edge,
                     top_max_per_market=self._settings.top_max_per_market,
-                    top_pool_depth=self._settings.top_pool_depth
+                    top_pool_depth=self._settings.top_pool_depth,
+                    require_allowlisted_leagues=self._settings.require_allowlisted_leagues,
+                    form_tier_priority=self._settings.form_tier_priority,
+                    form_max_tier=self._settings.form_max_tier,
             )
 
             if dual_res.tier_10.picks or dual_res.tier_20.picks:

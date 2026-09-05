@@ -151,6 +151,7 @@ def _build_pick(
     entry: tuple[str, float, float, int],
 ) -> "Pick":
     """Turn one scored market into the Pick the booker and pricer consume."""
+    from core.predictor.leagues import competition_tier
     from core.predictor.screen import Pick
 
     selection, probability, raw, sample = entry
@@ -159,6 +160,10 @@ def _build_pick(
         market=MARKET_LABELS[selection],
         selection=selection,
         probability=probability,
+        # Without this every form pick carried Pick's default of 3, so the
+        # ticket could not tell the Premier League from a regional amateur
+        # division even when it wanted to.
+        tier=competition_tier(fixture.category, fixture.tournament),
         # Conviction is the unshrunk read: how hard the form itself
         # points this way, before the sample-size discount.
         conviction=raw,
@@ -168,6 +173,25 @@ def _build_pick(
             f"{raw:.0%} raw, {probability:.0%} after shrink"
         ),
     )
+
+
+def _sort_key(tier: int, probability: float, tier_priority: bool) -> tuple:
+    """
+    Ordering for form candidates.
+
+    ``screen.py`` has always sorted ``(tier, -conviction)``; the form path
+    sorted on probability alone, which is why Ticket 4 kept arriving as a
+    card of minor leagues. That was not a read on the day — of 2,163 fixtures
+    surviving the exclusion patterns, 77% are Tier 3, so a pure probability
+    ranking truncated to the ten best fixtures lands on small leagues by
+    weight of numbers alone.
+
+    The trade-off is real and worth stating: with ``tier_priority`` on, a
+    weaker read in a major league outranks a stronger read in a minor one.
+    That is the requested behaviour, not an accident of it. Set
+    ``FORM_TIER_PRIORITY=false`` to rank on the form read alone.
+    """
+    return (tier, -probability) if tier_priority else (-probability,)
 
 
 def _readable_fixtures(
@@ -201,9 +225,11 @@ def screen_form(
     min_matches: int = DEFAULT_MIN_MATCHES,
     limit: Optional[int] = None,
     markets: Optional[list[str]] = None,
+    tier_priority: bool = True,
+    max_tier: int = 3,
 ) -> list["Pick"]:
     """
-    One pick per fixture, best-supported first.
+    One pick per fixture, major competitions first, best-supported within each.
 
     Fixtures where either side has fewer than ``min_matches`` of form produce
     nothing: with a five-match window the shrink would otherwise be doing most
@@ -211,14 +237,17 @@ def screen_form(
     """
     readable, skipped = _readable_fixtures(fixtures, forms, prefer_short, min_matches)
 
-    scored: list[tuple[float, "Pick"]] = []
+    scored: list[tuple[tuple, "Pick"]] = []
     for fixture, home, away in readable:
         ranked = ranked_markets(home, away, markets=markets)
         if not ranked:
             continue
-        scored.append((ranked[0][1], _build_pick(fixture, home, away, ranked[0])))
+        pick = _build_pick(fixture, home, away, ranked[0])
+        if pick.tier > max_tier:
+            continue
+        scored.append((_sort_key(pick.tier, ranked[0][1], tier_priority), pick))
 
-    scored.sort(key=lambda item: item[0], reverse=True)
+    scored.sort(key=lambda item: item[0])
     logger.info(
         "Form screen: %d picks from %d fixtures (%d skipped for thin form).",
         len(scored), len(fixtures), skipped,
@@ -235,6 +264,8 @@ def screen_form_candidates(
     per_fixture: int = 3,
     fixture_limit: Optional[int] = None,
     markets: Optional[list[str]] = None,
+    tier_priority: bool = True,
+    max_tier: int = 3,
 ) -> list["Pick"]:
     """
     Several selections per fixture, for a ticket builder that also sees price.
@@ -255,16 +286,21 @@ def screen_form_candidates(
     readable, skipped = _readable_fixtures(fixtures, forms, prefer_short, min_matches)
 
     per_fixture = max(1, per_fixture)
-    by_fixture: list[tuple[float, list["Pick"]]] = []
+    by_fixture: list[tuple[tuple, list["Pick"]]] = []
 
     for fixture, home, away in readable:
         ranked = ranked_markets(home, away, markets=markets)
         if not ranked:
             continue
         picks = [_build_pick(fixture, home, away, entry) for entry in ranked[:per_fixture]]
-        by_fixture.append((ranked[0][1], picks))
+        if picks[0].tier > max_tier:
+            continue
+        by_fixture.append((_sort_key(picks[0].tier, ranked[0][1], tier_priority), picks))
 
-    by_fixture.sort(key=lambda item: item[0], reverse=True)
+    # Ranked before ``fixture_limit`` truncates, which is the step that decides
+    # what the ticket can contain at all: pricing costs one SportyBet call per
+    # fixture, so only the head of this list is ever priced or bookable.
+    by_fixture.sort(key=lambda item: item[0])
     if fixture_limit:
         by_fixture = by_fixture[:fixture_limit]
 

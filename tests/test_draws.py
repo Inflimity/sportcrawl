@@ -32,7 +32,7 @@ def make_fixture(match_id=1, home="Alpha FC", away="Beta United"):
         away_name=away,
         home_id=match_id * 2,
         away_id=match_id * 2 + 1,
-        start_utc=0,
+        start_utc="2026-08-26T18:00:00+00:00",
         start_local="2026-08-26 18:00",
     )
 
@@ -378,8 +378,11 @@ class TestPipelineIntegration:
 
         booked = []
 
-        async def fake_book(text):
+        async def fake_book(text, kickoffs=None):
             booked.append(text)
+            # Legs now travel with their kickoffs so the booker cannot
+            # match a same-day event that merely shares a club name.
+            assert kickoffs, 'draw legs must be booked with their kickoffs'
             return BookingResult(
                 success=True, booking_code=f"CODE{len(booked)}", total_odds="336.00"
             )

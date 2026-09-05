@@ -260,6 +260,8 @@ async def grade_picks(
     selector: str = "screen",
     short_window: int = 5,
     markets: Optional[list[str]] = None,
+    tier_priority: bool = True,
+    max_tier: int = 3,
 ) -> str:
     """
     Re-screen each matchday and grade the picks the model would have made.
@@ -352,8 +354,14 @@ async def grade_picks(
             raw_out=raw_events,
         )
         if use_form:
+            # Mirrors production ordering, which now leads on competition tier.
+            # `limit` truncates, so the ordering decides which legs are graded
+            # at all — the measured 81.5% form hit rate predates tier priority
+            # and does not carry over to this population unchanged. Compare the
+            # two with --no-tier-priority before trusting either number.
             picks = screen_form(fixtures=fixtures, forms=forms, prefer_short=True,
-                                limit=top_n, markets=markets)
+                                limit=top_n, markets=markets,
+                                tier_priority=tier_priority, max_tier=max_tier)
         else:
             picks = screen_fixtures(fixtures=fixtures, forms=forms, limit=top_n,
                                     max_per_fixture=1)
@@ -460,6 +468,12 @@ def main() -> None:
                                       "e.g. \"Over 1.5,GG,Over 2.5,1,2,X\"")
     ap.add_argument("--grade", action="store_true",
                     help="re-screen and grade the model's picks (fetches SofaScore)")
+    ap.add_argument("--no-tier-priority", action="store_true",
+                    help="grade form picks ranked on the form read alone, "
+                         "ignoring competition tier (the pre-fix ordering)")
+    ap.add_argument("--max-tier", type=int, default=3,
+                    help="grade only competitions at or above this tier "
+                         "(1 = elite only, 3 = everything allowlisted)")
     ap.add_argument("--by-competition", action="store_true")
     ap.add_argument("--min-sample", type=int, default=20)
     ap.add_argument("--form-matches", type=int, default=10)
@@ -500,7 +514,9 @@ def main() -> None:
                                       sample_per_day=args.sample_per_day,
                                       selector=selector,
                                       short_window=args.short_window,
-                                      markets=whitelist)))
+                                      markets=whitelist,
+                                      tier_priority=not args.no_tier_priority,
+                                      max_tier=args.max_tier)))
 
 
 if __name__ == "__main__":

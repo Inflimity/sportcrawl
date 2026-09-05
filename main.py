@@ -301,10 +301,14 @@ async def main() -> None:
                     two_odds_short_window=settings.two_odds_short_window,
                     two_odds_markets=settings.two_odds_markets,
                     two_odds_per_fixture=settings.two_odds_per_fixture,
+                    two_odds_max_per_market=settings.two_odds_max_per_market,
                     top_rank_by_edge=settings.top_rank_by_edge,
                     top_min_edge=settings.top_min_edge,
                     top_max_per_market=settings.top_max_per_market,
                     top_pool_depth=settings.top_pool_depth,
+                    require_allowlisted_leagues=settings.require_allowlisted_leagues,
+                    form_tier_priority=settings.form_tier_priority,
+                    form_max_tier=settings.form_max_tier,
                 )
 
                 if dual_res.tier_10.picks or dual_res.tier_20.picks:
@@ -433,7 +437,10 @@ def cli_entry() -> None:
             raw_matches = convert_matches_to_raw_dicts(matches)
             pipeline = PredictionBookingPipeline(country_code="ng", headless=True)
             print(f"🧠 Running statistical Poisson model across {len(raw_matches)} fixtures...")
-            res = await pipeline.run_pipeline(raw_matches, top_n=args.top_picks, auto_book=True)
+            res = await pipeline.run_pipeline(
+                raw_matches, top_n=args.top_picks, auto_book=True,
+                require_allowlisted_leagues=settings.require_allowlisted_leagues,
+            )
 
             print(PredictionBookingPipeline.format_telegram_digest(res, f"🎯 Today's AI Banker Predictions ({today_str})"))
             await db.close()

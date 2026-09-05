@@ -17,6 +17,7 @@ from typing import Any, Optional
 from core.booker_engine import BookerEngine
 from core.predictor.enrich import fetch_team_forms
 from core.predictor.filter import FilterStats, Fixture, filter_fixtures
+from core.team_matcher import fixture_key
 from core.predictor.format import format_picks
 from core.predictor.odds import PricedPick
 from core.predictor.screen import Pick, screen_fixtures
@@ -201,6 +202,7 @@ class PredictionBookingPipeline:
         top_n: int = 10,
         form_matches: int = 10,
         auto_book: bool = True,
+        require_allowlisted_leagues: bool = True,
     ) -> PipelineResult:
         """
         Execute prediction screening on fixtures and automatically book them on SportyBet.
@@ -208,7 +210,12 @@ class PredictionBookingPipeline:
         logger.info("Starting prediction pipeline with %d raw fixtures (top_n=%d)...", len(raw_matches), top_n)
 
         # 1. Filter tradeable competitive fixtures
-        fixtures, stats = filter_fixtures(raw_matches, allow_unlisted=True)
+        # The allowlist in core/predictor/leagues.py used to be bypassed here
+        # unconditionally, so no booked ticket has ever been restricted to a
+        # tradeable competition.
+        fixtures, stats = filter_fixtures(
+            raw_matches, allow_unlisted=not require_allowlisted_leagues
+        )
         if not fixtures:
             logger.warning("No tradeable fixtures survived filtering.")
             return PipelineResult(picks=[], filter_stats=stats, picks_text="")
@@ -221,7 +228,10 @@ class PredictionBookingPipeline:
                 from core.team_matcher import match_fixture
                 bookable_fixtures = []
                 for fx in fixtures:
-                    if match_fixture(fx.home_name, fx.away_name, sporty_events, threshold=0.48):
+                    if match_fixture(
+                        fx.home_name, fx.away_name, sporty_events,
+                        threshold=0.48, kickoff=fx.start_utc,
+                    ):
                         bookable_fixtures.append(fx)
                 if bookable_fixtures:
                     logger.info("Matched %d/%d fixtures available on SportyBet", len(bookable_fixtures), len(fixtures))
@@ -252,7 +262,9 @@ class PredictionBookingPipeline:
         # 5. Automatically book on SportyBet
         if auto_book:
             logger.info("Auto-booking %d picks on SportyBet...", len(picks))
-            booking_res = await self.booker.book_predictions(picks_text)
+            booking_res = await self.booker.book_predictions(
+                picks_text, kickoffs=self._kickoff_map(picks)
+            )
             if booking_res.success and booking_res.booked_selections:
                 logger.info("✅ SportyBet Booking Success! Code: %s (Odds: %s)", booking_res.booking_code, booking_res.total_odds)
                 from core.team_matcher import team_similarity
@@ -291,10 +303,14 @@ class PredictionBookingPipeline:
         two_odds_short_window: int = 5,
         two_odds_markets: Optional[list[str]] = None,
         two_odds_per_fixture: int = 3,
+        two_odds_max_per_market: int = 0,
         top_rank_by_edge: bool = False,
         top_min_edge: float = 0.0,
         top_max_per_market: int = 0,
         top_pool_depth: int = 30,
+        require_allowlisted_leagues: bool = True,
+        form_tier_priority: bool = True,
+        form_max_tier: int = 3,
     ) -> DualPipelineResult:
         """
         Generate BOTH Top 10 Bankers and Top 20 Mega Accumulator tickets simultaneously.
@@ -309,7 +325,9 @@ class PredictionBookingPipeline:
         either — only the SportyBet prices needed to honour the cap.
         """
         logger.info("Running dual prediction pipeline (Top 10 & Top 20) with %d raw fixtures...", len(raw_matches))
-        fixtures, stats = filter_fixtures(raw_matches, allow_unlisted=True)
+        fixtures, stats = filter_fixtures(
+            raw_matches, allow_unlisted=not require_allowlisted_leagues
+        )
         if not fixtures:
             empty = PipelineResult(picks=[], filter_stats=stats, picks_text="")
             return DualPipelineResult(tier_10=empty, tier_20=empty, filter_stats=stats)
@@ -321,7 +339,10 @@ class PredictionBookingPipeline:
                 from core.team_matcher import match_fixture
                 bookable_fixtures = [
                     fx for fx in fixtures
-                    if match_fixture(fx.home_name, fx.away_name, sporty_events, threshold=0.48)
+                    if match_fixture(
+                        fx.home_name, fx.away_name, sporty_events,
+                        threshold=0.48, kickoff=fx.start_utc,
+                    )
                 ]
                 if bookable_fixtures:
                     fixtures = bookable_fixtures
@@ -376,7 +397,9 @@ class PredictionBookingPipeline:
         picks_text_10 = format_picks(picks_10)
         book_res_10 = None
         if auto_book and picks_10:
-            book_res_10 = await self.booker.book_predictions(picks_text_10)
+            book_res_10 = await self.booker.book_predictions(
+                picks_text_10, kickoffs=self._kickoff_map(picks_10)
+            )
 
         tier_10 = PipelineResult(
             picks=picks_10,
@@ -390,7 +413,9 @@ class PredictionBookingPipeline:
         picks_text_20 = format_picks(picks_20)
         book_res_20 = None
         if auto_book and picks_20:
-            book_res_20 = await self.booker.book_predictions(picks_text_20)
+            book_res_20 = await self.booker.book_predictions(
+                picks_text_20, kickoffs=self._kickoff_map(picks_20)
+            )
 
         tier_20 = PipelineResult(
             picks=picks_20,
@@ -412,6 +437,9 @@ class PredictionBookingPipeline:
                 source=two_odds_source,
                 markets=two_odds_markets,
                 per_fixture=two_odds_per_fixture,
+                tier_priority=form_tier_priority,
+                max_tier=form_max_tier,
+                max_per_market=two_odds_max_per_market,
             )
 
         draws = None
@@ -458,6 +486,24 @@ class PredictionBookingPipeline:
             return [PricedPick(pick=p, error=str(e)) for p in picks[:depth]]
 
     @staticmethod
+    def _kickoff_map(picks: list["Pick"]) -> dict[str, Any]:
+        """
+        Fixture key -> kickoff, for every pick about to be booked.
+
+        Predictions reach the booker as plain text and that format carries no
+        time, so the booker used to re-match on team names alone against the
+        whole SportyBet card. Names cannot separate two games on the same day
+        that share a club name, which is how a leg ended up booked against a
+        different fixture from the one screened. This hands the kickoff over
+        the side, leaving the text contract untouched.
+        """
+        return {
+            fixture_key(p.fixture.home_name, p.fixture.away_name): p.fixture.start_utc
+            for p in picks
+            if getattr(p, "fixture", None) is not None and p.fixture.start_utc
+        }
+
+    @staticmethod
     def _rank_picks(
         priced: list["PricedPick"],
         rank_by_edge: bool = False,
@@ -500,6 +546,9 @@ class PredictionBookingPipeline:
         forms: Optional[dict] = None,
         markets: Optional[list[str]] = None,
         per_fixture: int = 3,
+        tier_priority: bool = True,
+        max_tier: int = 3,
+        max_per_market: int = 0,
     ) -> "TwoOddsResult":
         """
         Build the short banker: the best legs that multiply to at most ``cap``.
@@ -546,6 +595,8 @@ class PredictionBookingPipeline:
                     per_fixture=per_fixture,
                     fixture_limit=price_depth,
                     markets=markets,
+                    tier_priority=tier_priority,
+                    max_tier=max_tier,
                 )
                 if form_picks:
                     candidates = form_picks
@@ -571,6 +622,7 @@ class PredictionBookingPipeline:
             max_legs=max_legs,
             min_legs=min_legs,
             label=f"{cap:g} Odds Banker",
+            max_per_market=max_per_market,
         )
         if not ticket:
             logger.info("No ticket could be built under a %.2f cap.", cap)
@@ -578,7 +630,9 @@ class PredictionBookingPipeline:
 
         result.ticket = ticket
         if auto_book:
-            result.booking_result = await self.booker.book_predictions("\n".join(ticket.lines))
+            result.booking_result = await self.booker.book_predictions(
+                "\n".join(ticket.lines), kickoffs=self._kickoff_map(ticket.legs)
+            )
 
         return result
 
@@ -635,7 +689,10 @@ class PredictionBookingPipeline:
         for ticket in ladder:
             booking = None
             if auto_book:
-                booking = await self.booker.book_predictions("\n".join(ticket.lines))
+                booking = await self.booker.book_predictions(
+                    "\n".join(ticket.lines),
+                    kickoffs=self._kickoff_map(ticket.legs),
+                )
                 if booking and booking.success:
                     logger.info(
                         "Draw %s booked: %s (odds %s)",

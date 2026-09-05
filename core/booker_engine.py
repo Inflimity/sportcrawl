@@ -11,6 +11,7 @@ import logging
 from typing import Any, Optional
 
 from core.prediction_parser import ParsedBet, parse_prediction_text
+from core.team_matcher import fixture_key
 from services.sportybet_service import BookingResult, SportyBetBookerService
 
 logger = logging.getLogger("SportCrawl.BookerEngine")
@@ -36,12 +37,23 @@ class BookerEngine:
         self,
         raw_text: str,
         timeout_seconds: int = 45,
+        kickoffs: Optional[dict[str, Any]] = None,
     ) -> BookingResult:
         """
         Takes raw prediction text, parses the games, visits SportyBet,
         and generates the booking code.
+
+        ``kickoffs`` maps ``core.team_matcher.fixture_key`` to the fixture's own
+        start time. It is optional and additive: without it the booker matches
+        on names alone, which is what let a leg book against a different game
+        that happened to share a club name. The prediction text format cannot
+        carry a kickoff without breaking the parser contract, so it travels
+        beside the text rather than inside it.
         """
         parsed_bets = self.parse_predictions(raw_text)
+        if kickoffs:
+            for bet in parsed_bets:
+                bet.kickoff = kickoffs.get(fixture_key(bet.home_team, bet.away_team))
         if not parsed_bets:
             return BookingResult(
                 success=False,
@@ -82,9 +94,15 @@ class BookerEngine:
             lines.append(f"• <b>{s.home_team} vs {s.away_team}</b>\n   └ 🎯 <b>{s.selection_desc}</b> ({s.market_desc}){odds_tag}")
 
         if result.unmatched_selections:
-            lines.append("\n<b>⚠️ Unmatched / Not Found:</b>")
+            lines.append("\n<b>⚠️ Not added to the slip:</b>")
             for u in result.unmatched_selections:
-                lines.append(f"• <i>{u.home_team} vs {u.away_team}</i> ({u.selection_desc})")
+                # The reason is the actionable part: a fixture SportyBet does
+                # not list needs a different game, a market it does not offer
+                # needs a different bet, and wording it could not place
+                # uniquely needs a more specific line. Showing only the fixture
+                # left all three looking the same.
+                reason = f" — <i>{u.error_msg}</i>" if u.error_msg else ""
+                lines.append(f"• <b>{u.home_team} vs {u.away_team}</b> ({u.selection_desc}){reason}")
 
         if result.share_url:
             lines.append(f'\n🔗 <a href="{result.share_url}">Open Betslip on SportyBet ↗</a>')

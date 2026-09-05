@@ -258,7 +258,13 @@ class SportyBetBookerService:
         total_odds_calc = 1.0
 
         for bet in parsed_bets:
-            matched_res = match_fixture(bet.home_team, bet.away_team, api_events, threshold=0.48)
+            # Kickoff, when the caller supplied one, is the check that
+            # separates two games on the same card sharing a club name. The
+            # card-wide booking window only ever closed wrong-*day* matches.
+            matched_res = match_fixture(
+                bet.home_team, bet.away_team, api_events,
+                threshold=0.48, kickoff=bet.kickoff,
+            )
             if not matched_res:
                 unmatched.append(
                     BookedSelection(

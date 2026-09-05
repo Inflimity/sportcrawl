@@ -289,6 +289,7 @@ def build_capped_ticket(
     label: str = "2 Odds",
     target_ratio: float = DEFAULT_TARGET_RATIO,
     min_leg_probability: float = DEFAULT_MIN_LEG_PROBABILITY,
+    max_per_market: int = 0,
 ) -> Optional[Ticket]:
     """
     The safest short accumulator that actually reaches a price cap.
@@ -311,6 +312,13 @@ def build_capped_ticket(
     Legs are constrained to one per fixture, to at least ``min_legs``, and to
     selections above ``min_leg_probability`` — a cap is a payout target, not a
     reason to pad the slip with a coin flip.
+
+    ``max_per_market`` additionally limits how many legs may share a selection.
+    It defaults to 0 (off), and that default is a judgement about evidence, not
+    an oversight: form-picked Over 1.5 is the only market on this engine with a
+    measured edge (81.5% against a 77.2% base over 297 legs), while GG has never
+    been graded at all. Forcing variety today would trade a measured market for
+    an unmeasured one. Set it once the other markets have numbers.
 
     Returns ``None`` if nothing is priced: an unpriced ticket has no combined
     odds, so a cap could not be honoured and claiming otherwise would be a lie
@@ -339,6 +347,7 @@ def build_capped_ticket(
     def evaluate(combo: Sequence[PricedPick]) -> Optional[tuple[float, float]]:
         """``(combined odds, joint probability)``, or ``None`` if invalid."""
         seen: set[tuple[str, str]] = set()
+        per_market: dict[str, int] = {}
         odds = 1.0
         probability = 1.0
         for cand in combo:
@@ -346,6 +355,15 @@ def build_capped_ticket(
             if key in seen:
                 return None
             seen.add(key)
+            if max_per_market > 0:
+                # Distinct fixtures settle independently, so this is not about
+                # outcome variance. It is about correlated *model* error: three
+                # Over 1.5 legs are one estimate entered three times, and if
+                # that estimate is biased the ticket loses as a unit.
+                selection = cand.pick.selection
+                per_market[selection] = per_market.get(selection, 0) + 1
+                if per_market[selection] > max_per_market:
+                    return None
             odds *= cand.odds  # type: ignore[operator]
             if odds > max_combined_odds:
                 return None

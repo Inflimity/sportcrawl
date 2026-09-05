@@ -331,7 +331,10 @@ async def run_predictor_pipeline_endpoint(req: PredictorRunRequest):
 
     raw_matches = convert_matches_to_raw_dicts(matches)
     pipeline = PredictionBookingPipeline(country_code=req.country, headless=True)
-    result = await pipeline.run_pipeline(raw_matches, top_n=req.top_n, auto_book=req.auto_book)
+    result = await pipeline.run_pipeline(
+        raw_matches, top_n=req.top_n, auto_book=req.auto_book,
+        require_allowlisted_leagues=_settings.require_allowlisted_leagues,
+    )
     return result.to_dict()
 
 

@@ -76,6 +76,14 @@ class Settings(BaseSettings):
     # cached per event) and let a fixture contribute at a shorter line instead
     # of being dropped when its best read is priced beyond the cap.
     two_odds_per_fixture: int = 3
+    # Most legs of one selection the ticket may carry (0 = no limit). Three
+    # Over 1.5 legs are one model estimate entered three times, so a biased
+    # estimate loses the whole ticket rather than one leg of it. Left OFF
+    # because Over 1.5 is the only market here with a measured hit rate
+    # (81.5% over 297 form legs); GG and the rest are ungraded, so forcing
+    # variety today swaps a measured market for an unmeasured one.
+    # TWO_ODDS_MAX_PER_MARKET=2 turns it on without a deploy.
+    two_odds_max_per_market: int = 0
 
     # ── Tickets 1 & 2: price awareness ──────────────────────────────────
     # The Top 10/20 path books on model probability alone and never sees a
@@ -93,6 +101,36 @@ class Settings(BaseSettings):
     top_min_edge: float = 0.0            # drop picks below this edge (0 = off)
     top_max_per_market: int = 0          # max legs of one market (0 = no cap)
     top_pool_depth: int = 30             # how many picks get priced
+
+    # ── Competition quality ──────────────────────────────────────────────
+    # Which leagues may be traded at all, and how they are ordered.
+    #
+    # `require_allowlisted_leagues` was effectively FALSE for the whole live
+    # history of this pipeline: `run_pipeline` and `run_dual_pipeline` both
+    # called `filter_fixtures(..., allow_unlisted=True)`, hardcoded, so the
+    # ALLOWED_COMPETITIONS allowlist in core/predictor/leagues.py never applied
+    # to a single booked ticket. Only the exclusion patterns ran. Measured on
+    # the stored card: 2,163 fixtures survived exclusions, of which 77% were
+    # Tier 3 and the pool included Bolivian regional divisions, Argentine
+    # Primera C and a reserve league whose abbreviated name ("Camp. De Reser
+    # …") slipped past the `\breserve\b` pattern. The allowlist cuts that to
+    # 811 fixtures. Set REQUIRE_ALLOWLISTED_LEAGUES=false to restore the old
+    # everything-not-excluded behaviour.
+    require_allowlisted_leagues: bool = True
+
+    # Order form candidates by competition tier before form strength, which is
+    # what `screen.py` has always done for Tickets 1 and 2. Off means ranking
+    # on the form read alone — the previous behaviour, and the reason Ticket 4
+    # kept arriving as a card of minor leagues regardless of what else was on.
+    # The cost of leaving it on: a weaker read in a major league outranks a
+    # stronger read in a minor one.
+    form_tier_priority: bool = True
+    # Hard ceiling on competition tier for the form ticket. 1 = elite only
+    # (top-5 European flights and UEFA), 2 = adds major secondary flights and
+    # the domestic cups, 3 = everything allowlisted. A ceiling is a blunter
+    # instrument than the ordering above and can empty the ticket on a thin
+    # day, so it stays open by default.
+    form_max_tier: int = 3
 
     # ── Top / Featured Leagues & Competitions ────────────────────────────
     # Matches in these tournaments are prioritized in digests & alerts

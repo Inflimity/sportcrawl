@@ -135,7 +135,10 @@ async def attach_odds(
             priced.append(PricedPick(pick=pick, error=f"Generated line does not parse: {pick.line!r}"))
             continue
 
-        matched = match_fixture(bet.home_team, bet.away_team, events, threshold=0.48)
+        matched = match_fixture(
+            bet.home_team, bet.away_team, events,
+            threshold=0.48, kickoff=getattr(pick.fixture, "start_utc", None),
+        )
         if not matched:
             priced.append(PricedPick(pick=pick, error="Fixture not listed on SportyBet"))
             continue

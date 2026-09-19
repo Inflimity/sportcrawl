@@ -937,6 +937,7 @@ class TelegramNotifier:
                     top_extra_corners=self._settings.top_extra_corners,
                     top_extra_shots=self._settings.top_extra_shots,
                     top_extra_team_goals=self._settings.top_extra_team_goals,
+                    top_extra_stats_per_run=self._settings.top_extra_stats_per_run,
                 )
                 booked_codes = _collect_booking_codes(dual=dual_res)
                 text_response = PredictionBookingPipeline.format_telegram_dual_digest(dual_res, today_str)
@@ -1268,6 +1269,7 @@ class TelegramNotifier:
                     top_extra_corners=self._settings.top_extra_corners,
                     top_extra_shots=self._settings.top_extra_shots,
                     top_extra_team_goals=self._settings.top_extra_team_goals,
+                    top_extra_stats_per_run=self._settings.top_extra_stats_per_run,
             )
 
             if dual_res.tier_10.picks or dual_res.tier_20.picks:

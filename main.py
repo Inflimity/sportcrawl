@@ -408,6 +408,7 @@ async def main() -> None:
                     top_extra_corners=settings.top_extra_corners,
                     top_extra_shots=settings.top_extra_shots,
                     top_extra_team_goals=settings.top_extra_team_goals,
+                    top_extra_stats_per_run=settings.top_extra_stats_per_run,
                 )
 
                 if dual_res.tier_10.picks or dual_res.tier_20.picks:

@@ -121,6 +121,18 @@ class Settings(BaseSettings):
     top_extra_shots: bool = True
     top_extra_team_goals: bool = True
 
+    # How many NEW match-statistics requests one run may make. Corner history
+    # has to be banked before a corner line means anything, and on day one
+    # nothing is banked — an unbounded first run would ask for roughly a
+    # thousand, three times a day, against the source that has already
+    # throttled this project's IP once (PROJECT_STATE, SofaScore load).
+    #
+    # So the backlog drains over several days instead of in one burst. A
+    # finished match is fetched once ever, so this cost falls away: after the
+    # first week almost every form match is a cache hit. Raise it only if the
+    # VPS is demonstrably not being throttled.
+    top_extra_stats_per_run: int = 120
+
     # ── Nightly result report ────────────────────────────────────────────
     # Grades the day's logged tickets against SofaScore and pushes the result
     # to Telegram, so a win or a loss does not have to be checked by hand.

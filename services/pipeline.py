@@ -316,6 +316,7 @@ class PredictionBookingPipeline:
         top_extra_corners: bool = True,
         top_extra_shots: bool = True,
         top_extra_team_goals: bool = True,
+        top_extra_stats_per_run: int = 120,
     ) -> DualPipelineResult:
         """
         Generate BOTH Top 10 Bankers and Top 20 Mega Accumulator tickets simultaneously.
@@ -427,7 +428,10 @@ class PredictionBookingPipeline:
                 from core.predictor.extra_markets import screen_extra_markets
                 from core.predictor.stats_form import build_stat_forms, ensure_stats
 
-                stats = await ensure_stats(raw_events, window=form_matches)
+                stats = await ensure_stats(
+                    raw_events, window=form_matches,
+                    max_fetch=top_extra_stats_per_run,
+                )
                 names = {}
                 for fx in fixtures:
                     names[fx.home_id] = fx.home_name

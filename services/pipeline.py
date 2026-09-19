@@ -428,7 +428,12 @@ class PredictionBookingPipeline:
                 from core.predictor.extra_markets import screen_extra_markets
                 from core.predictor.stats_form import build_stat_forms, ensure_stats
 
-                stats = await ensure_stats(
+                # NOT `stats` — that name already holds the FilterStats from
+                # filter_fixtures above, and rebinding it here silently handed
+                # a dict to DualPipelineResult(filter_stats=...), which only
+                # surfaced later as `'dict' object has no attribute 'total'`
+                # in the digest — after the tickets had already been booked.
+                stat_rows = await ensure_stats(
                     raw_events, window=form_matches,
                     max_fetch=top_extra_stats_per_run,
                 )
@@ -437,7 +442,7 @@ class PredictionBookingPipeline:
                     names[fx.home_id] = fx.home_name
                     names[fx.away_id] = fx.away_name
                 stat_forms = build_stat_forms(
-                    raw_events, stats, names=names, window=form_matches
+                    raw_events, stat_rows, names=names, window=form_matches
                 )
 
                 # Only fixtures already on the shortlist. Screening the whole

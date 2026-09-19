@@ -85,6 +85,13 @@ def _leg_rows(
             # The perishable half. Without this the row is worth little.
             "price": round(price, 4) if isinstance(price, (int, float)) else None,
             "rationale": getattr(leg, "rationale", None),
+            # Whether this market's rate has ever been graded against its
+            # price. Recorded per leg rather than derived later: which markets
+            # were unproven is a fact about the day the bet was struck, and a
+            # corner market that gets validated in November must not silently
+            # rewrite what September's card was.
+            "validated": bool(getattr(leg, "validated", True)),
+            "sample": getattr(leg, "sample", None),
             **(extra or {}),
         })
     return rows

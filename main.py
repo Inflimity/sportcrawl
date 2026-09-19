@@ -15,6 +15,7 @@ import signal
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -235,6 +236,99 @@ async def main() -> None:
                 logger.error("Error in digest scheduler: %s", e)
                 await asyncio.sleep(60)
 
+    # ── 7b. Nightly Result Report (23:50 WAT) ────────────────────────
+    async def run_nightly_report_scheduler() -> None:
+        """
+        Grade the day's logged tickets and push the result to Telegram.
+
+        Separate from the digest scheduler above rather than folded into it,
+        because the two need different clock resolutions. The digest fires on
+        the hour; this has to fire at 23:50, and widening the digest loop to
+        minutes would make it re-evaluate three windows 60x more often for no
+        benefit.
+
+        Fires once per local date, and the marker is written to disk rather
+        than held in memory: a restart between 23:50 and midnight would
+        otherwise re-send the same report, and a duplicate result message is
+        worse than a late one — it reads as a second ticket settling.
+        """
+        if not settings.nightly_report_enabled:
+            return
+
+        try:
+            hour_s, _, minute_s = settings.nightly_report_time.partition(":")
+            target_hour, target_minute = int(hour_s), int(minute_s or 0)
+        except ValueError:
+            logger.error(
+                "NIGHTLY_REPORT_TIME %r is not HH:MM; nightly report disabled.",
+                settings.nightly_report_time,
+            )
+            return
+
+        tz = ZoneInfo(settings.app_timezone)
+        logger.info(
+            "Nightly Result Report active — %02d:%02d %s",
+            target_hour, target_minute, settings.app_timezone,
+        )
+        # Survives a restart. A read failure means "not sent", which risks a
+        # duplicate; a write failure is swallowed, which risks the same. Both
+        # are better than a crash in a loop whose whole job is reporting.
+        marker = Path("logs/.nightly_report_sent")
+        sent_for: set[str] = set()
+        try:
+            if marker.exists():
+                sent_for = {
+                    line.strip() for line in marker.read_text().splitlines() if line.strip()
+                }
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not read nightly report marker (%s).", e)
+
+        def _mark_sent(day: str) -> None:
+            sent_for.add(day)
+            try:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                # Keep the last fortnight only; the file is a latch, not a log.
+                recent = sorted(sent_for)[-14:]
+                marker.write_text("\n".join(recent) + "\n")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Could not persist nightly report marker (%s).", e)
+
+        while True:
+            try:
+                now = datetime.now(tz)
+                today_key = now.strftime("%Y-%m-%d")
+                due = (now.hour, now.minute) >= (target_hour, target_minute)
+
+                if due and today_key not in sent_for:
+                    _mark_sent(today_key)
+                    logger.info("Building nightly result report for %s...", today_key)
+
+                    from services.nightly_report import build_nightly_report
+
+                    message, tickets = await build_nightly_report(
+                        date_str=today_key,
+                        tz=settings.app_timezone,
+                        show_legs=settings.nightly_report_show_legs,
+                    )
+                    if tickets:
+                        await notifier.send_custom_message(
+                            text=message, parse_mode="HTML"
+                        )
+                        logger.info(
+                            "Nightly report sent: %d ticket(s) graded.", len(tickets)
+                        )
+                    else:
+                        logger.info("Nightly report: no tickets logged for %s.", today_key)
+
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                # Never let a grading fault take down the service. The report
+                # is worth less than the engine that produces the tickets.
+                logger.error("Error in nightly report scheduler: %s", e)
+                await asyncio.sleep(60)
+
     # ── 8. Initialise dashboard API ──────────────────────────────────
     app = create_app()
     init_routes(db, engine, settings, monitor=monitor)
@@ -309,6 +403,11 @@ async def main() -> None:
                     require_allowlisted_leagues=settings.require_allowlisted_leagues,
                     form_tier_priority=settings.form_tier_priority,
                     form_max_tier=settings.form_max_tier,
+                    top_extra_markets=settings.top_extra_markets,
+                    top_extra_max=settings.top_extra_max,
+                    top_extra_corners=settings.top_extra_corners,
+                    top_extra_shots=settings.top_extra_shots,
+                    top_extra_team_goals=settings.top_extra_team_goals,
                 )
 
                 if dual_res.tier_10.picks or dual_res.tier_20.picks:
@@ -341,6 +440,7 @@ async def main() -> None:
             asyncio.create_task(monitor.start(), name="sofascore-monitor"),
             asyncio.create_task(uvicorn_server.serve(), name="api-server"),
             asyncio.create_task(run_digest_scheduler(), name="digest-scheduler"),
+            asyncio.create_task(run_nightly_report_scheduler(), name="nightly-report"),
             asyncio.create_task(run_startup_prediction(), name="startup-prediction"),
         ]
 

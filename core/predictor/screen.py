@@ -88,6 +88,47 @@ class Pick:
     rationale: str
     tier: int = 3          # 1=Top 5 Leagues / UCL, 2=Major National, 3=Other global
 
+    # Whether this market's hit rate has ever been measured against its price.
+    # The seven goals/result markets above have been; corners, shots on target
+    # and team totals have NOT — they were added on request with that stated,
+    # and this flag is what carries the caveat into the digest, the ticket log
+    # and the nightly report instead of leaving it in a docstring.
+    validated: bool = True
+    # Matches behind the estimate, where it came from a banked statistics
+    # sample rather than from the goals form window. None for the seven.
+    sample: Optional[int] = None
+
+    @property
+    def is_extra(self) -> bool:
+        """A corner, shot or team-total leg — priced, never yet proven."""
+        return not self.validated
+
+    @property
+    def family(self) -> str:
+        """
+        The market GROUP a diversification cap should count, as opposed to the
+        exact selection string.
+
+        These are not the same thing, and the difference decides what reaches
+        the card. "Home Over 0.5" and "Away Over 0.5" are two selections but
+        one market and one model; counting them separately gave team totals
+        twice the budget of any other market and crowded corners off the Top
+        20 entirely. "Over 8.5 Corners" and "Over 9.5 Corners" are likewise
+        one market, and a cap that read them as two would let a single corner
+        model take the card the way Over 1.5 used to.
+
+        The measured seven keep their own selection as their family, so a cap
+        over them behaves exactly as it did before this existed.
+        """
+        sel = self.selection
+        if "Corners" in sel:
+            return "corners"
+        if "Shots" in sel:
+            return "shots_on_target"
+        if sel.startswith(("Home Over", "Home Under", "Away Over", "Away Under")):
+            return "team_goals"
+        return sel
+
     @property
     def line(self) -> str:
         """The exact text ``core.prediction_parser`` will consume."""

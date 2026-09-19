@@ -311,6 +311,11 @@ class PredictionBookingPipeline:
         require_allowlisted_leagues: bool = True,
         form_tier_priority: bool = True,
         form_max_tier: int = 3,
+        top_extra_markets: bool = False,
+        top_extra_max: int = 8,
+        top_extra_corners: bool = True,
+        top_extra_shots: bool = True,
+        top_extra_team_goals: bool = True,
     ) -> DualPipelineResult:
         """
         Generate BOTH Top 10 Bankers and Top 20 Mega Accumulator tickets simultaneously.
@@ -323,6 +328,14 @@ class PredictionBookingPipeline:
         legs whose prices multiply to at most ``two_odds_cap``. It reuses the
         picks already screened above, so it costs no extra SofaScore traffic
         either — only the SportyBet prices needed to honour the cap.
+
+        ``top_extra_markets`` widens the TOP 20 ONLY, adding corner, shots and
+        team-total legs so the card stops being twenty entries of one model.
+        Top 10 is untouched and stays on the seven measured markets: the mega
+        accumulator is where market concentration hurts most and where a leg
+        carrying an unknown rate costs least, because the ticket is already a
+        long shot. Every added leg is flagged ``validated=False`` and that flag
+        reaches the digest, the ticket log and the nightly report.
         """
         logger.info("Running dual prediction pipeline (Top 10 & Top 20) with %d raw fixtures...", len(raw_matches))
         fixtures, stats = filter_fixtures(
@@ -349,8 +362,14 @@ class PredictionBookingPipeline:
 
         # Fetch form once for all matches. short_window builds the five-match
         # cut from the same events, for the form-guide ticket, at no extra cost.
+        # raw_out captures the untouched event lists. Corner and shot history
+        # lives on a different endpoint keyed by those events' ids, so asking
+        # for them here is what makes the extra markets fetchable without a
+        # second pass over the card.
+        raw_events: dict[int, list[dict[str, Any]]] = {}
         forms = await fetch_team_forms(
-            fixtures, form_matches=form_matches, short_window=two_odds_short_window
+            fixtures, form_matches=form_matches, short_window=two_odds_short_window,
+            raw_out=raw_events,
         )
 
         # Screen up to 50 picks so Top 20 always has a full 20-match card
@@ -390,7 +409,93 @@ class PredictionBookingPipeline:
             )
             ranked = all_screened
 
-        from core.predictor.tickets import cap_per_market
+        from core.predictor.tickets import build_mixed_card, cap_per_market
+
+        # ── Extra markets, for the Top 20 card only ──────────────────────
+        #
+        # Corners, shots on target and team totals. Requested so the mega
+        # accumulator stops being twenty copies of the Over 1.5 model — which
+        # is a real defect, not a preference: twenty legs of one market is one
+        # biased estimate entered twenty times.
+        #
+        # None of these three has a graded hit rate, and they sit on 5.8-8.2%
+        # margin against match goals' 3.8%. They are added with that stated,
+        # bounded by ``top_extra_max``, and flagged unvalidated end to end.
+        extra_picks: list[Pick] = []
+        if top_extra_markets:
+            try:
+                from core.predictor.extra_markets import screen_extra_markets
+                from core.predictor.stats_form import build_stat_forms, ensure_stats
+
+                stats = await ensure_stats(raw_events, window=form_matches)
+                names = {}
+                for fx in fixtures:
+                    names[fx.home_id] = fx.home_name
+                    names[fx.away_id] = fx.away_name
+                stat_forms = build_stat_forms(
+                    raw_events, stats, names=names, window=form_matches
+                )
+
+                # Only fixtures already on the shortlist. Screening the whole
+                # card would widen the pool the extra legs are drawn from and
+                # reintroduce the ANALYSIS.md §2 maximum-over-noise the fixed
+                # line rule in extra_markets.py exists to avoid.
+                shortlisted = {p.fixture.match_id: p for p in all_screened}
+                for fx in fixtures:
+                    if fx.match_id not in shortlisted:
+                        continue
+                    hf, af = forms.get(fx.home_id), forms.get(fx.away_id)
+                    if not hf or not af:
+                        continue
+                    extra_picks.extend(
+                        screen_extra_markets(
+                            fx, hf, af, stat_forms,
+                            tier=shortlisted[fx.match_id].tier,
+                            enable_corners=top_extra_corners,
+                            enable_shots=top_extra_shots,
+                            enable_team_goals=top_extra_team_goals,
+                        )
+                    )
+                # PRICE GATE — an extra leg goes on the card only if the
+                # bookmaker actually lists it.
+                #
+                # The measured seven are allowed onto a card unpriced: they are
+                # markets every event carries, and a missing price means the
+                # pricing call failed, not that the market is absent. These are
+                # the opposite case. Shots on target in particular is often not
+                # offered prematch, and an unbookable leg does real damage: the
+                # ticket log records 20 legs, the slip carries 19, and the
+                # nightly report then grades a bet that was never struck.
+                #
+                # attach_odds caches markets per event and these are events the
+                # shortlist already priced, so the gate is close to free.
+                if extra_picks:
+                    priced_extra = await self._price_shortlist(
+                        extra_picks, depth=len(extra_picks)
+                    )
+                    bookable = [pp.pick for pp in priced_extra if pp.odds]
+                    dropped = len(extra_picks) - len(bookable)
+                    if dropped:
+                        logger.info(
+                            "Extra markets: dropped %d leg(s) the book does not list.",
+                            dropped,
+                        )
+                    extra_picks = bookable
+
+                logger.info(
+                    "Extra markets: %d bookable legs (%d corners, %d shots, %d team totals).",
+                    len(extra_picks),
+                    sum(1 for p in extra_picks if "Corners" in p.selection),
+                    sum(1 for p in extra_picks if "Shots" in p.selection),
+                    sum(1 for p in extra_picks if "Total Goals" in p.market),
+                )
+            except Exception as e:  # noqa: BLE001
+                # A statistics outage must cost the extra legs, never the card.
+                logger.warning(
+                    "Extra markets unavailable (%s); Top 20 falls back to the "
+                    "measured markets.", e,
+                )
+                extra_picks = []
 
         # Top 10 Picks
         picks_10 = cap_per_market(ranked, top_max_per_market, limit=10)
@@ -409,7 +514,21 @@ class PredictionBookingPipeline:
         )
 
         # Top 20 Picks
-        picks_20 = cap_per_market(ranked, top_max_per_market, limit=20)
+        if extra_picks:
+            # Interleave by the ranking already applied, so a corner leg has
+            # to earn its place against the goals leg from the same fixture
+            # rather than being appended after them.
+            combined = sorted(
+                list(ranked) + extra_picks, key=lambda p: (p.tier, -p.conviction)
+            )
+            picks_20 = build_mixed_card(
+                combined,
+                limit=20,
+                max_per_market=top_max_per_market if top_max_per_market > 0 else 5,
+                max_unvalidated=top_extra_max,
+            )
+        else:
+            picks_20 = cap_per_market(ranked, top_max_per_market, limit=20)
         picks_text_20 = format_picks(picks_20)
         book_res_20 = None
         if auto_book and picks_20:
@@ -790,8 +909,26 @@ class PredictionBookingPipeline:
             ])
         lines.append("")
 
+        # A "⚠️" marks a leg on a market whose hit rate has never been graded
+        # against its price — corners, shots, team totals. The flag travels on
+        # the Pick itself, so the digest, the ticket log and the nightly report
+        # cannot disagree about which legs are proven.
         for idx, p in enumerate(dual_res.tier_20.picks, 1):
-            lines.append(f"<b>{idx}.</b> {p.fixture.home_name} vs {p.fixture.away_name} ➔ <b>{p.selection}</b> <i>({p.market})</i>")
+            flag = "" if getattr(p, "validated", True) else " ⚠️"
+            lines.append(
+                f"<b>{idx}.</b> {p.fixture.home_name} vs {p.fixture.away_name} ➔ "
+                f"<b>{p.selection}</b>{flag} <i>({p.market})</i>"
+            )
+
+        unproven = [p for p in dual_res.tier_20.picks if not getattr(p, "validated", True)]
+        if unproven:
+            markets = sorted({p.market for p in unproven})
+            lines.append(
+                f"\n⚠️ <i>{len(unproven)} of {len(dual_res.tier_20.picks)} legs are on "
+                f"{', '.join(markets).lower()} — markets this engine has never graded "
+                f"against a price. They are here to break the Over 1.5 monoculture; "
+                f"treat them as unproven until the nightly report has a few weeks on them.</i>"
+            )
 
         if dual_res.two_odds and dual_res.two_odds.ticket:
             lines.append(PredictionBookingPipeline.format_telegram_two_odds_section(dual_res.two_odds))

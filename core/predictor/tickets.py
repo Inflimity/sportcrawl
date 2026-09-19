@@ -43,7 +43,7 @@ from __future__ import annotations
 import itertools
 import logging
 from dataclasses import dataclass, field
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from core.predictor.odds import PricedPick
 from core.predictor.screen import Pick
@@ -477,3 +477,114 @@ def cap_per_market(
         max_per_market, len(kept), len(counts), len(overflow),
     )
     return kept[:limit] if limit else kept
+
+
+def build_mixed_card(
+    candidates: "Sequence[Pick]",
+    limit: int,
+    max_per_market: int = 4,
+    max_unvalidated: Optional[int] = None,
+) -> list["Pick"]:
+    """
+    Assemble a card that spreads across markets without doubling up a fixture.
+
+    `cap_per_market` diversifies a list that already holds one pick per
+    fixture. Once corner, shot and team-total legs are screened as well, a
+    fixture offers several candidates, and two things have to hold at once
+    that a per-market cap alone cannot give:
+
+    **One leg per fixture.** SportyBet rejects two selections from the same
+    match in a standard accumulator, so a card carrying both would not merely
+    be correlated — it would fail to book, and the booker would report an
+    unmatched leg rather than a short ticket. Even where a book allows it, two
+    legs on one match are one outcome entered twice.
+
+    **A ceiling on unmeasured markets.** Corners, shots and team totals have no
+    graded hit rate and sit on 5.8-8.2% margin against match goals' 3.8%.
+    Mixing them in answers the real problem — twenty legs of one model is that
+    model's error twenty times over — but letting them take the whole card
+    swaps a measured bias for an unmeasured one. ``max_unvalidated`` bounds the
+    swap; None leaves it unbounded, which is a choice the caller makes
+    explicitly rather than one that happens by default.
+
+    Selection is greedy over the incoming order, which callers have already
+    sorted by tier then conviction. Each fixture contributes its best candidate
+    whose market still has room; a fixture whose every market is full is
+    deferred, then topped back up at the end rather than shipping a short card.
+    """
+    by_fixture: dict[Any, list["Pick"]] = {}
+    order: list[Any] = []
+    for pick in candidates:
+        key = getattr(pick.fixture, "match_id", None) or id(pick.fixture)
+        if key not in by_fixture:
+            by_fixture[key] = []
+            order.append(key)
+        by_fixture[key].append(pick)
+
+    counts: dict[str, int] = {}
+    unvalidated = 0
+    kept: list["Pick"] = []
+    deferred: list[Any] = []
+
+    def _take(pick: "Pick") -> None:
+        nonlocal unvalidated
+        counts[pick.family] = counts.get(pick.family, 0) + 1
+        if not pick.validated:
+            unvalidated += 1
+        kept.append(pick)
+
+    # ── Pass 1: strict. Every cap is honoured; a fixture with no legal
+    #    option is set aside rather than forced onto the card.
+    for key in order:
+        if len(kept) >= limit:
+            break
+        options = sorted(by_fixture[key], key=lambda p: -p.conviction)
+        chosen = None
+        for pick in options:
+            if max_per_market > 0 and counts.get(pick.family, 0) >= max_per_market:
+                continue
+            if (
+                max_unvalidated is not None
+                and not pick.validated
+                and unvalidated >= max_unvalidated
+            ):
+                continue
+            chosen = pick
+            break
+        if chosen is None:
+            deferred.append(key)
+            continue
+        _take(chosen)
+
+    # ── Pass 2: top up, but degrade gracefully.
+    #
+    #    The card must not ship short — a Top 20 that quietly returns 13 legs
+    #    changes the payout by more than diversification is worth. But the
+    #    first version of this simply appended each deferred fixture's BEST
+    #    pick, which ignored both caps at once: on a 15-fixture card it put 9
+    #    unvalidated legs on a card capped at 6, and 7 legs of one market on a
+    #    cap of 5. Relaxing a cap is not the same as discarding it.
+    #
+    #    So a topped-up fixture contributes the option that breaks the least:
+    #    a validated leg ahead of an unvalidated one once the unvalidated
+    #    ceiling is spent, and among those the market used least so far.
+    for key in deferred:
+        if len(kept) >= limit:
+            break
+        options = by_fixture[key]
+        over_ceiling = max_unvalidated is not None and unvalidated >= max_unvalidated
+        options = sorted(
+            options,
+            key=lambda p: (
+                (not p.validated) if over_ceiling else False,
+                counts.get(p.family, 0),
+                -p.conviction,
+            ),
+        )
+        _take(options[0])
+
+    logger.info(
+        "Mixed card: %d legs across %d markets (%d unvalidated, %d fixtures deferred).",
+        len(kept), len(counts), sum(1 for p in kept if not p.validated), len(deferred),
+    )
+    return kept[:limit]

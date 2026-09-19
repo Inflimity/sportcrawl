@@ -319,6 +319,78 @@ sudo journalctl -u sportcrawl -f
 
 ---
 
+### 1e. Nightly result report (`services/nightly_report.py`, `tools/nightly_report.py`)
+
+Fires at **23:50 WAT** from its own scheduler in `main.py` (separate from the
+digest loop, which is hour-resolution) and pushes WON / LOST / PENDING per
+ticket to Telegram.
+
+- Grades **what the engine logged**, from `logs/tickets.jsonl`. Outcomes come
+  from SofaScore via `ticket_ledger.fetch_outcomes`, never the local DB, which
+  drops ~39% of results and skews low-scoring.
+- **A ticket with a pending leg is PENDING, never WON.** A late kickoff is
+  unfinished at 23:50 and reporting it as a win would be wrong on exactly the
+  nights it matters. One lost leg settles the ticket immediately.
+- Tickets are grouped by **booking code**, not by name: the digest runs three
+  times a day, so grouping on name alone would merge three bets into one
+  impossible 60-leg card.
+- Losing legs are named with the score. Streaks skip days a ticket was not
+  booked rather than treating them as a break.
+- Caveat printed on every report: legs swapped by hand between tickets, or
+  booked as Early Goals, happen after the log is written and are not tracked.
+
+Manual re-run: `python3 -m tools.nightly_report --date 2026-09-18` (add
+`--send` to push to Telegram, `--days 7` for a week). Re-running is cheap —
+settled scores are cached.
+
+---
+
+### 1f. Ticket 2 beyond Over 1.5 (`core/predictor/extra_markets.py`, `stats_form.py`)
+
+The Top 20 was filling with 14+ legs of Over 1.5 — not a read on the day but a
+selection-rule artefact: ranking on probability always converges on the highest
+base rate. Twenty legs of one market is one biased estimate entered twenty
+times. **Top 10 is unchanged and still uses only the measured seven.**
+
+Added, for Ticket 2 only, and **all three are UNVALIDATED**:
+
+| market | data source | status |
+|---|---|---|
+| Team totals (`Home Over 0.5`) | existing goals Poisson, read per side | no new data needed |
+| Corners (`Over 8.5 Corners`) | `/event/{id}/statistics`, banked per match | needs 6+ matches per team |
+| Shots on target | same endpoint | often not listed prematch |
+
+Design points that are load-bearing:
+
+- **The line is chosen from the expected count BEFORE any probability is
+  computed** — ANALYSIS.md §2 measured what "best line per fixture" does: mean
+  edge -0.40%, reported +8.0% on 21 of 21 fixtures. No maximisation here.
+- **Wording**: team totals must read `Home Over 0.5`, not `Porto Over 0.5`.
+  SportyBet never puts the club name in a team-total market description, so the
+  club wording resolves to nothing and the leg is dropped. Unqualified
+  `Over 0.5` is worse — the parser's fast path books it as MATCH goals.
+  Regression-tested against `resolve_by_description`.
+- **Price gate**: an extra leg only reaches the card if the book actually
+  prices it. An unbookable leg means the log records 20 legs and the slip
+  carries 19, and the nightly report then grades a bet never struck.
+- **Caps count market FAMILIES, not selection strings** (`Pick.family`).
+  "Home Over 0.5" and "Away Over 0.5" are one model; counted separately they
+  took double any other market's budget and pushed corners off the card.
+- `TOP_EXTRA_MAX` (default 8 of 20) bounds unvalidated legs. Every one is
+  flagged ⚠️ in the digest and counted in the nightly report.
+
+Measured effect on a 40-fixture card: Over 1.5 fell from 14/20 to 6/20, across
+7 market families.
+
+**These are priced, not proven.** `tools/nightly_report.py` is what turns them
+into a measured rate — after a few weeks run `python3 -m tools.ticket_ledger`
+and read the edge column per market. §7 prices corners at 5.8-6.0% and shots at
+8.0% against match goals' 3.8%, so the +4.3pp form edge would be NEGATIVE on
+them if it transfers at all, which is unknown. Kill switch:
+`TOP_EXTRA_MARKETS=false`.
+
+---
+
 ## 🔮 Future Roadmap & Planned Concepts
 
 ### 🧠 AI Second Opinion / Qualitative Validation Layer (Hybrid Quant + LLM)

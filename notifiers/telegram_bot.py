@@ -932,6 +932,11 @@ class TelegramNotifier:
                     require_allowlisted_leagues=self._settings.require_allowlisted_leagues,
                     form_tier_priority=self._settings.form_tier_priority,
                     form_max_tier=self._settings.form_max_tier,
+                    top_extra_markets=self._settings.top_extra_markets,
+                    top_extra_max=self._settings.top_extra_max,
+                    top_extra_corners=self._settings.top_extra_corners,
+                    top_extra_shots=self._settings.top_extra_shots,
+                    top_extra_team_goals=self._settings.top_extra_team_goals,
                 )
                 booked_codes = _collect_booking_codes(dual=dual_res)
                 text_response = PredictionBookingPipeline.format_telegram_dual_digest(dual_res, today_str)
@@ -1258,6 +1263,11 @@ class TelegramNotifier:
                     require_allowlisted_leagues=self._settings.require_allowlisted_leagues,
                     form_tier_priority=self._settings.form_tier_priority,
                     form_max_tier=self._settings.form_max_tier,
+                    top_extra_markets=self._settings.top_extra_markets,
+                    top_extra_max=self._settings.top_extra_max,
+                    top_extra_corners=self._settings.top_extra_corners,
+                    top_extra_shots=self._settings.top_extra_shots,
+                    top_extra_team_goals=self._settings.top_extra_team_goals,
             )
 
             if dual_res.tier_10.picks or dual_res.tier_20.picks:

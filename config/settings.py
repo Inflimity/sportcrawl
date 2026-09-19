@@ -102,6 +102,35 @@ class Settings(BaseSettings):
     top_max_per_market: int = 0          # max legs of one market (0 = no cap)
     top_pool_depth: int = 30             # how many picks get priced
 
+    # ── Ticket 2 only: markets beyond the measured seven ─────────────────
+    # Corners, shots on target and team totals on the TOP 20 card, so the mega
+    # accumulator stops being twenty entries of one model. Top 10 is untouched.
+    #
+    # These markets have no graded hit rate and carry 5.8-8.2% margin against
+    # match goals' 3.8%, so the engine's measured +4.3pp form edge would be
+    # NEGATIVE on them if it transferred at all — which is unknown. They are on
+    # by request with that stated, bounded by `top_extra_max`, and flagged
+    # unvalidated in the digest, the ticket log and the nightly report.
+    #
+    # `tools/nightly_report.py` is what turns this from a guess into a measured
+    # rate: once a few weeks of corner legs have settled, run
+    # `python3 -m tools.ticket_ledger` and read the edge column per market.
+    top_extra_markets: bool = True       # corners/shots/team totals on Top 20
+    top_extra_max: int = 8               # ceiling on unvalidated legs, of 20
+    top_extra_corners: bool = True
+    top_extra_shots: bool = True
+    top_extra_team_goals: bool = True
+
+    # ── Nightly result report ────────────────────────────────────────────
+    # Grades the day's logged tickets against SofaScore and pushes the result
+    # to Telegram, so a win or a loss does not have to be checked by hand.
+    # 23:50 local is late enough for almost every card and early enough to be
+    # the same calendar day; anything unfinished is reported PENDING rather
+    # than guessed at.
+    nightly_report_enabled: bool = True
+    nightly_report_time: str = "23:50"   # HH:MM, local (app_timezone)
+    nightly_report_show_legs: bool = True
+
     # ── Competition quality ──────────────────────────────────────────────
     # Which leagues may be traded at all, and how they are ordered.
     #

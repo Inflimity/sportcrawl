@@ -84,6 +84,57 @@ class FootballMatch(Base):
         )
 
 
+class MatchStats(Base):
+    """
+    Post-match statistics for a finished fixture: corners, cards, shots.
+
+    Kept in its own table rather than as columns on FootballMatch because it
+    comes from a different SofaScore endpoint (`/event/{id}/statistics`), is
+    only available once a match is finished, and is frequently missing for
+    smaller leagues. A missing row means "not fetched or not published" — never
+    "zero corners" — so every column is nullable and callers must check.
+
+    ANALYSIS.md §6 is the reason `*_conceded` is not stored: most sources return
+    corners TAKEN when asked for corners CONCEDED. Here the away team's `for` IS
+    the home team's `against`, derived rather than fetched, so the two can never
+    silently be the same column.
+    """
+
+    __tablename__ = "match_stats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    match_id: Mapped[int] = mapped_column(Integer, unique=True, nullable=False, index=True)
+
+    # Corners — the reason this table exists.
+    home_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_corners_ht: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_corners_ht: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Banked while we are already paying for the request. ANALYSIS.md §7 prices
+    # bookings at 8.2% and shots on target at 8.0%, so these are unlikely ever
+    # to be worth staking — but a sample you did not collect cannot be analysed
+    # later, and collecting them costs nothing extra now.
+    home_shots_on_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_shots_on_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    home_possession: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    @property
+    def total_corners(self) -> Optional[int]:
+        if self.home_corners is None or self.away_corners is None:
+            return None
+        return self.home_corners + self.away_corners
+
+    def __repr__(self) -> str:
+        return f"<MatchStats {self.match_id}: corners {self.home_corners}-{self.away_corners}>"
+
+
 class SavedMatch(Base):
     """User bookmarked match for dedicated alerts / tracking."""
 
